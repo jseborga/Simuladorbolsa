@@ -20,6 +20,7 @@
   },
   "homepage": "https://github.com/jseborga/Simuladorbolsa#readme",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0",
     "ccxt": "^4.5.84",
     "express": "^5.2.1"
   },

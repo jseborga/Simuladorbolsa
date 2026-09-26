@@ -12,6 +12,16 @@ Los precios y las velas se obtienen con [CCXT](https://github.com/ccxt/ccxt) (li
 - **📓 Diario de trading**: anota setup, emoción, motivo, valoración y lección de cada operación (también al abrirla desde el panel Operar). Estadísticas por setup, emoción, activo y kill zone, con **conclusiones automáticas** («tu mejor setup es…», «cuando operas con FOMO pierdes de media…»).
 - **🧮 Calculadora de riesgo**: eliges el % del patrimonio que arriesgas y el stop (sugerido a 1,5 ATR); calcula la cantidad, la pérdida máxima y la relación R:R, dibuja stop y objetivo en el gráfico y abre la compra con **stop-loss y objetivo enlazados (OCO)**: al ejecutarse uno se cancela el otro.
 
+### Aprender con IA (Claude)
+- **✨ Bot IA**: un agente de IA recibe al cierre de cada vela un resumen del mercado (últimas 40 velas, indicadores, estructura ICT, FVG, order blocks, liquidez, kill zone), su posición y sus últimas 5 decisiones con lo que pasó después, más tus instrucciones de estilo («sé conservador», «usa ICT»…). Devuelve una decisión estructurada (comprar / vender / mantener, tamaño, stop, objetivo, confianza, razonamiento y factores clave).
+- **El servidor manda, no la IA**: sólo compra si supera tu confianza mínima; el stop es obligatorio y se recorta a una distancia máxima; al «mantener» sólo puede subir el stop, nunca bajarlo; nunca usa más del presupuesto del bot. Cada decisión queda registrada con su razonamiento y las correcciones aplicadas.
+- **Comparativa de bots**: tabla que ordena todos tus bots (IA, señales, DCA, grid) por resultado para comprobar si la IA decide mejor que un algoritmo.
+- **✨ Analizar con IA** (gráfico): explicación educativa de tendencia, niveles clave, escenarios alcista/bajista y qué vigilar.
+- **✨ Revisar con IA** (diario): un «mentor» revisa una operación tuya (entrada, stop, tamaño, salida, emociones) y te deja una lección concreta.
+- Lección de la Academia sobre ventajas y límites del trading con IA (por qué no hay backtest honesto de un LLM, exceso de confianza, costes).
+
+Se usa el SDK oficial de Anthropic con el modelo `claude-opus-5`, salidas estructuradas (JSON Schema) para las decisiones y `fallbacks: "default"` por si el modelo rechaza una petición. Sin `ANTHROPIC_API_KEY` todo lo demás funciona igual y la interfaz explica cómo activarla.
+
 ### Para operar
 
 - **Cuentas de usuario**: registro/inicio de sesión (contraseñas con `scrypt`), cada usuario con su propia cartera.
@@ -86,6 +96,11 @@ npm test
 | `FEE_RATE_FOREX` | `0.0001`                  | Comisión en forex (0,01 %) |
 | `FEE_RATE_GOLD`  | `0.0005`                  | Comisión en oro (0,05 %) |
 | `BOT_INTERVAL_MS` | `20000`                  | Cada cuánto revisan los bots si cerró una vela |
+| `ANTHROPIC_API_KEY` | —                      | Clave de la API de Anthropic: activa el bot IA y los análisis con IA |
+| `AI_MODEL`     | `claude-opus-5`             | Modelo de Claude a usar |
+| `AI_DAILY_LIMIT` | `100`                     | Consultas a la IA por usuario y día (control de gasto) |
+
+> **Coste de la IA**: cada vela cerrada de un bot IA es una consulta (unos pocos miles de tokens de entrada). Por eso los bots IA usan velas de 15m o más, hay un máximo de 3 bots IA por usuario y un límite diario de consultas. Con velas de 1h, un bot hace unas 24 consultas al día.
 
 > Nota: Binance bloquea algunas regiones (error 451); por eso se prueba primero Kraken, que además ofrece los pares de forex y oro.
 > Sólo se operan pares cotizados en USD (el saldo de las cuentas está en USD); por eso no hay USD/JPY ni USD/CAD.
@@ -100,6 +115,7 @@ src/
   strategies.js  Estrategias predefinidas (señales de compra/venta)
   custom.js   Constructor de estrategias: validación, plantillas y evaluación de reglas
   academy.js  Academia: corrección de quizzes, tareas prácticas e insignias
+  ai.js       Integración con Claude: contexto de mercado, decisiones estructuradas, análisis y revisiones
   backtest.js Motor de backtesting
   bots.js     Bots de señales, DCA y grid sobre la cuenta virtual
   db.js       Esquema SQLite
@@ -108,7 +124,7 @@ public/
   courses.js  Contenido de la Academia: módulos, lecciones, quizzes e insignias
   chart.js    Gráficos en canvas (velas, indicadores, zonas, dibujos, cruz de precio, curva de capital)
   app.js, index.html, styles.css  Interfaz web (sin dependencias)
-test/         Tests de órdenes (incl. OCO), indicadores, ICT, horarios, constructor, backtesting, bots y Academia
+test/         Tests de órdenes (incl. OCO), indicadores, ICT, horarios, constructor, backtesting, bots, Academia e IA
 ```
 
 ## API
@@ -123,6 +139,9 @@ test/         Tests de órdenes (incl. OCO), indicadores, ICT, horarios, constru
 | GET  | `/api/history?symbol=&timeframe=&since=&limit=` | Histórico antiguo para el Replay |
 | GET/POST | `/api/replay-sessions` | Sesiones de Replay guardadas |
 | GET  | `/api/academy` · POST `/api/academy/lessons/:id` | Progreso de la Academia / enviar respuestas `{answers}` |
+| GET  | `/api/ai` | Estado de la IA y consultas usadas hoy |
+| POST | `/api/ai/analyze` · `/api/ai/review/:tradeId` | Análisis del gráfico `{symbol, timeframe}` / revisión de una operación |
+| GET  | `/api/bots/:id/decisions` | Decisiones razonadas de un bot IA |
 | DELETE | `/api/orders/:id` | Cancelar orden abierta |
 | POST | `/api/reset` | Reiniciar la cuenta |
 | GET  | `/api/strategies` | Estrategias disponibles y sus parámetros |

@@ -384,6 +384,25 @@
           task: { id: 'bot', text: 'Crea un bot de cualquier tipo.' },
           action: { label: 'Ir a Bots', view: 'bots' },
         },
+        {
+          id: 'l21', title: 'Trading con IA: ventajas y límites',
+          body: `
+<p>Un <strong>bot IA</strong> no sigue reglas fijas: un modelo de lenguaje (aquí, Claude) lee el resumen del mercado en cada vela y decide comprar, vender o mantener, <strong>explicando su razonamiento</strong>. Puede combinar muchas señales a la vez y adaptarse al contexto, pero tiene límites importantes:</p>
+<ul>
+  <li><strong>No predice el futuro.</strong> Interpreta la misma información que tú; los mercados tienen mucho azar y ninguna IA gana siempre.</li>
+  <li><strong>Puede sonar muy segura y equivocarse.</strong> Por eso el bot exige una confianza mínima y el servidor impone un stop obligatorio y una distancia máxima del stop.</li>
+  <li><strong>No se puede hacer un backtest honesto</strong> con datos antiguos: el modelo pudo aprender en su entrenamiento lo que pasó después. Sólo se evalúa bien operando en tiempo real (aquí, con dinero virtual).</li>
+  <li><strong>Cuesta dinero y tiempo</strong>: cada decisión es una consulta a la API. Por eso los bots IA usan velas de 15 minutos o más y hay un límite diario.</li>
+  <li><strong>Hay que medir.</strong> Pon un bot IA junto a un bot de señales en el mismo par y compara en la tabla de Bots cuál rinde mejor tras varias semanas.</li>
+</ul>
+<p>Lo más valioso para aprender es leer sus <em>decisiones</em>: ¿qué factores tuvo en cuenta? ¿Estás de acuerdo? Usa también <strong>✨ Analizar con IA</strong> en el gráfico y <strong>✨ Revisar con IA</strong> en tu diario para recibir explicaciones de un «mentor».</p>`,
+          quiz: [
+            { q: '¿Por qué no se puede hacer un backtest fiable de un bot IA con datos de hace años?', options: ['Porque es muy caro', 'Porque el modelo pudo aprender lo que pasó después', 'Porque no hay datos'], answer: 1, explain: 'El modelo pudo ver esos precios durante su entrenamiento: sería como examinarse conociendo las respuestas.' },
+            { q: 'La IA dice que está 95 % segura de una compra. ¿Qué haces?', options: ['Invierto todo sin stop', 'Mantengo el stop y el tamaño según mi riesgo', 'Nada, la IA nunca falla'], answer: 1, explain: 'Una confianza alta no garantiza nada: la gestión del riesgo manda siempre.' },
+            { q: '¿Cómo sabes si un bot IA decide mejor que un algoritmo clásico?', options: ['Porque explica sus decisiones', 'Comparando sus resultados en tiempo real durante un periodo largo', 'Porque la IA es más moderna'], answer: 1, explain: 'Sólo los resultados medidos durante suficiente tiempo lo dicen.' },
+          ],
+          action: { label: 'Ir a Bots', view: 'bots' },
+        },
       ],
     },
   ];

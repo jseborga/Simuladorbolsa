@@ -137,7 +137,7 @@ function showView(v) {
   if (v === 'ranking') loadRanking();
   if (v === 'market') drawChart();
   if (v === 'backtest' && state.bt) drawBacktest();
-  if (v === 'bots') loadBots(true);
+  if (v === 'bots') { loadBots(true); loadAiInfo(); }
   if (v === 'journal') loadJournal();
   if (v === 'replay') { loadReplaySessions(); renderReplay(); }
   if (v === 'academy') { closeLesson(); loadAcademy(); }
@@ -1077,6 +1077,7 @@ const BOT_TYPES = {
   signal: 'Opera según una estrategia (predefinida o creada en «Estrategias»): al cerrar cada vela evalúa las reglas y compra o vende.',
   dca: 'Compra una cantidad fija cada cierto tiempo (Dollar Cost Averaging). Puede comprar extra en las caídas y vender todo al alcanzar el take-profit sobre el precio medio.',
   grid: 'Reparte la inversión en niveles dentro de un rango: compra cada vez que el precio baja un nivel y vende al subir al siguiente. Ideal para mercados laterales.',
+  ai: 'Un agente de IA (Claude) recibe al cierre de cada vela un resumen del mercado (velas, indicadores, ICT, horario) y decide comprar, vender o mantener, explicando su razonamiento. El servidor aplica tus límites: confianza mínima, stop obligatorio y distancia máxima del stop. Compáralo con tus otros bots para ver si realmente decide mejor.',
 };
 state.botType = 'signal';
 state.botPanels = {}; // id -> 'edit' | 'log'
@@ -1086,6 +1087,9 @@ function setBotType(type) {
   $$('[data-bot-type]').forEach((b) => b.classList.toggle('active', b.dataset.botType === type));
   $$('#bot-form [data-for]').forEach((el) => el.classList.toggle('hidden', !el.dataset.for.split(' ').includes(type)));
   $('#bot-type-desc').textContent = BOT_TYPES[type];
+  const aiOff = type === 'ai' && !state.ai?.enabled;
+  $('#bot-form .ai-off').classList.toggle('hidden', !aiOff);
+  $('#bot-form button[type=submit]').disabled = aiOff;
   if (type === 'grid') prefillGrid();
 }
 $$('[data-bot-type]').forEach((b) => b.addEventListener('click', () => setBotType(b.dataset.botType)));
@@ -1128,6 +1132,11 @@ $('#bot-form').addEventListener('submit', async (e) => {
       amount: Number(f.amount.value), intervalHours: Number(f.intervalHours.value),
       dropPct: Number(f.dropPct.value), maxBuys: Number(f.maxBuys.value), takeProfit: Number(f.takeProfit.value),
     });
+  } else if (type === 'ai') {
+    Object.assign(body, {
+      amount: Number(f.amount.value), timeframe: f.aiTimeframe.value, instructions: f.instructions.value,
+      minConfidence: Number(f.minConfidence.value), maxStopPct: Number(f.maxStopPct.value),
+    });
   } else {
     Object.assign(body, { low: Number(f.low.value), high: Number(f.high.value), grids: Number(f.grids.value), investment: Number(f.investment.value) });
   }
@@ -1136,13 +1145,14 @@ $('#bot-form').addEventListener('submit', async (e) => {
     toast('🤖 Bot activado');
     f.name.value = '';
     await Promise.all([loadBots(true), loadMe()]);
+    if (type === 'ai') setTimeout(() => { loadBots(true); loadMe(); loadAiInfo(); }, 3000); // la primera decisión tarda unos segundos
   } catch (err) {
     $('#bot-error').textContent = err.message;
   }
 });
 
 const TF_NAME = { '1m': '1 minuto', '5m': '5 minutos', '15m': '15 minutos', '1h': '1 hora', '4h': '4 horas', '1d': '1 día' };
-const TYPE_BADGE = { signal: '🧠 Señales', dca: '📅 DCA', grid: '🔲 Grid' };
+const TYPE_BADGE = { signal: '🧠 Señales', dca: '📅 DCA', grid: '🔲 Grid', ai: '✨ IA' };
 
 function botDetails(b) {
   const pos = b.qty > 0
@@ -1161,6 +1171,12 @@ function botDetails(b) {
     rows = `<dt>Plan</dt><dd>${usd(b.amount)} cada ${c.intervalHours} h${c.dropPct ? ` · extra si cae ${c.dropPct} %` : ''}${c.maxBuys ? ` · máx. ${c.maxBuys} compras` : ''}</dd>
       <dt>Ciclo actual</dt><dd>${st.buys || 0} compras · invertido ${usd(st.cost || 0)}</dd>
       <dt>Próxima compra</dt><dd>${c.maxBuys && st.buys >= c.maxBuys ? 'Límite alcanzado' : next ? `en ${fmtDuration(Math.ceil(next / 60000))}` : 'en breve'}</dd>`;
+  } else if (b.type === 'ai') {
+    const c = b.config;
+    rows = `<dt>Agente</dt><dd>Claude · velas de ${TF_NAME[b.timeframe]} · ${usd(b.amount)} por operación</dd>
+      <dt>Instrucciones</dt><dd>${esc(c.instructions || 'Ninguna: decide con su criterio')}</dd>
+      <dt>Límites</dt><dd>Confianza mínima ${(c.minConfidence * 100).toFixed(0)} % · stop máx. ${c.maxStopPct} %</dd>
+      ${b.qty > 0 ? `<dt>Stop / objetivo IA</dt><dd>${c.stop ? px(c.stop) : '—'} / ${c.target ? px(c.target) : '—'}</dd>` : ''}`;
   } else {
     const c = b.config;
     const cells = (c.cells || []).map((x) => `<span class="${x.state}" title="${x.state === 'sell' ? 'Comprado, esperando para vender' : 'Esperando para comprar'}"></span>`).join('');
@@ -1192,9 +1208,47 @@ function botEditForm(b) {
       + field('Máx. compras', 'maxBuys', b.config.maxBuys, 'type="number" min="0"');
   }
   if (b.type === 'grid') html += '<p class="hint" style="grid-column:1/-1">El rango y los niveles de un grid no se pueden cambiar en marcha: elimínalo y crea otro.</p>';
+  if (b.type === 'ai') {
+    html += `<label>Temporalidad <select name="timeframe">${['15m', '1h', '4h', '1d'].map((t) => `<option${t === b.timeframe ? ' selected' : ''}>${t}</option>`).join('')}</select></label>`
+      + `<label>Confianza mínima <select name="minConfidence">${[0.5, 0.6, 0.7, 0.8].map((v) => `<option value="${v}"${v === b.config.minConfidence ? ' selected' : ''}>${v * 100} %</option>`).join('')}</select></label>`
+      + field('Stop máximo %', 'maxStopPct', b.config.maxStopPct, 'type="number" step="any" min="0.2" max="30"')
+      + `<label style="grid-column:1/-1">Instrucciones <textarea name="instructions" rows="2" maxlength="1000">${esc(b.config.instructions || '')}</textarea></label>`;
+  }
   return `<form class="edit" data-edit-form="${b.id}">${html}
     <div class="btn-row"><button type="submit" class="primary">Guardar cambios</button><button type="button" data-bot-panel="${b.id}" data-panel="">Cancelar</button></div>
     <p class="error" style="grid-column:1/-1"></p></form>`;
+}
+
+const ACTION = { buy: 'Comprar', sell: 'Vender', hold: 'Mantener' };
+
+// Razonamiento de cada decisión del agente IA: lo más educativo del bot.
+async function aiLog(id) {
+  const list = await api(`/bots/${id}/decisions`);
+  const el = document.querySelector(`[data-ai-log="${id}"]`);
+  if (!el) return;
+  el.innerHTML = '<strong>Decisiones de la IA</strong>' + (list.length ? list.map((d) => `<div class="decision">
+      <div class="top"><time>${date(d.created_at)}</time>
+        <span class="pill ${d.action === 'hold' ? 'hold' : d.action}">${ACTION[d.action]}</span>
+        a ${px(d.price)} · confianza <span class="conf"><span style="width:${d.confidence * 100}%"></span></span> ${(d.confidence * 100).toFixed(0)} %
+        ${d.executed ? '<span class="tag">✔ ejecutada</span>' : ''}</div>
+      <p>${esc(d.reasoning)}</p>
+      ${d.factors.length ? `<div class="factors">${d.factors.map((f) => `<span class="tag">${esc(f)}</span>`).join('')}</div>` : ''}
+      ${d.note ? `<p class="muted small">🛡️ ${esc(d.note)}</p>` : ''}
+    </div>`).join('') : '<div class="muted">Todavía no hay decisiones: la IA decide al cierre de cada vela.</div>');
+}
+
+// Comparativa: ¿qué bot va mejor? (útil para ver si la IA supera a los algoritmos)
+function renderBotCompare(bots) {
+  if (bots.length < 2) { $('#bots-compare').innerHTML = ''; return; }
+  const rows = bots.map((b) => {
+    const ref = b.type === 'grid' ? b.config.investment : b.amount;
+    const total = b.realized + b.unrealized;
+    return { b, total, pctRef: ref ? (total / ref) * 100 : 0 };
+  }).sort((x, y) => y.total - x.total);
+  $('#bots-compare').innerHTML = `<table class="list compare"><thead><tr><th>Comparativa</th><th>Tipo</th><th class="r">G/P total</th><th class="r">% sobre lo invertido</th><th class="r">Operaciones</th></tr></thead><tbody>
+    ${rows.map(({ b, total, pctRef }, i) => `<tr><td>${i === 0 ? '🥇 ' : ''}#${b.id} ${esc(b.name || b.strategyName)}</td><td>${TYPE_BADGE[b.type]}</td>
+      <td class="r ${cls(total)}">${usd(total)}</td><td class="r ${cls(pctRef)}">${pct(pctRef)}</td><td class="r">${b.trade_count}</td></tr>`).join('')}
+    </tbody></table>`;
 }
 
 async function botLog(id) {
@@ -1220,6 +1274,7 @@ async function loadBots(force = false) {
             <div class="actions">
               <button data-bot-toggle="${b.id}" data-active="${b.active ? 0 : 1}">${b.active ? 'Pausar' : 'Reanudar'}</button>
               <button data-bot-panel="${b.id}" data-panel="edit">✏️ Editar</button>
+              ${b.type === 'ai' ? `<button data-bot-panel="${b.id}" data-panel="ai">🧠 Decisiones</button>` : ''}
               <button data-bot-panel="${b.id}" data-panel="log">📜 Registro</button>
               <button class="danger" data-bot-del="${b.id}" data-qty="${b.qty}">Eliminar</button>
             </div>
@@ -1227,10 +1282,15 @@ async function loadBots(force = false) {
           <dl class="kv">${botDetails(b)}</dl>
           ${panel === 'edit' ? botEditForm(b) : ''}
           ${panel === 'log' ? `<div class="log" data-log="${b.id}">Cargando…</div>` : ''}
+          ${panel === 'ai' ? `<div class="log" data-ai-log="${b.id}">Cargando…</div>` : ''}
         </div>`;
       }).join('')
     : '<p class="muted">No tienes bots. Crea uno a la izquierda, desde un backtest o desde el constructor de estrategias.</p>';
-  for (const [id, p] of Object.entries(state.botPanels)) if (p === 'log') botLog(id);
+  for (const [id, p] of Object.entries(state.botPanels)) {
+    if (p === 'log') botLog(id);
+    if (p === 'ai') aiLog(id);
+  }
+  renderBotCompare(bots);
 }
 
 $('#bots-list').addEventListener('click', async (e) => {
@@ -1263,7 +1323,7 @@ $('#bots-list').addEventListener('submit', async (e) => {
   const id = form.dataset.editForm;
   const body = {};
   const params = {};
-  for (const el of form.querySelectorAll('input, select')) {
+  for (const el of form.querySelectorAll('input, select, textarea')) {
     if (el.name.startsWith('p:')) params[el.name.slice(2)] = Number(el.value);
     else body[el.name] = el.type === 'number' ? Number(el.value) : el.value;
   }
@@ -1451,6 +1511,7 @@ function renderJournalList() {
           <span class="tags">${t.setup ? `<span class="tag">${esc(t.setup)}</span>` : ''}${t.emotion ? `<span class="tag">${esc(t.emotion)}</span>` : ''}</span>
           <span class="stars">${stars(t.rating)}</span>
           <button class="link" data-j-edit="${t.id}">${t.setup || t.notes || t.emotion ? '✏️ Editar' : '📝 Anotar'}</button>
+          <button class="link" data-j-ai="${t.id}">✨ Revisar con IA</button>
         </div>
         ${t.notes ? `<div class="note">${esc(t.notes)}</div>` : ''}
         ${t.lesson ? `<div class="note">💡 ${esc(t.lesson)}</div>` : ''}
@@ -1857,6 +1918,69 @@ $('#view-academy').addEventListener('submit', async (e) => {
   }
 });
 
+// ---------- IA: estado, análisis del gráfico y revisión de operaciones ----------
+function md(text) {
+  // Markdown mínimo y seguro: se escapa todo y sólo se interpretan títulos, listas y negritas.
+  const lines = esc(text).split('\n');
+  let html = '', list = null;
+  const close = () => { if (list) { html += `</${list}>`; list = null; } };
+  for (const raw of lines) {
+    const line = raw.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    let m;
+    if ((m = line.match(/^#{1,4}\s+(.*)/))) { close(); html += `<h4>${m[1]}</h4>`; }
+    else if ((m = line.match(/^\s*[-*]\s+(.*)/))) { if (list !== 'ul') { close(); html += '<ul>'; list = 'ul'; } html += `<li>${m[1]}</li>`; }
+    else if ((m = line.match(/^\s*\d+[.)]\s+(.*)/))) { if (list !== 'ol') { close(); html += '<ol>'; list = 'ol'; } html += `<li>${m[1]}</li>`; }
+    else if (line.trim()) { close(); html += `<p>${line}</p>`; }
+  }
+  close();
+  return html;
+}
+
+async function loadAiInfo() {
+  try { state.ai = await api('/ai'); } catch { state.ai = { enabled: false }; }
+  const a = state.ai;
+  $('#ai-usage').textContent = a.enabled ? `Consultas a la IA hoy: ${a.usedToday} de ${a.dailyLimit} · modelo ${a.model}. Cada vela cerrada de un bot IA es una consulta.` : '';
+  $('#ai-analyze').title = a.enabled ? 'Pide a la IA un análisis educativo de este gráfico' : 'La IA no está configurada en este servidor (falta ANTHROPIC_API_KEY)';
+}
+
+const AI_OFF_MSG = 'La IA no está configurada en este servidor: quien lo administre debe definir ANTHROPIC_API_KEY.';
+
+$('#ai-analyze').addEventListener('click', async () => {
+  const box = $('#ai-analysis');
+  box.classList.remove('hidden');
+  if (!state.ai?.enabled) { box.innerHTML = `<p>${esc(AI_OFF_MSG)}</p>`; return; }
+  const btn = $('#ai-analyze');
+  btn.disabled = true;
+  box.innerHTML = `<div class="ai-head">✨ Analizando ${esc(state.symbol)} (${state.timeframe})…</div>`;
+  try {
+    const r = await api('/ai/analyze', { method: 'POST', body: { symbol: state.symbol, timeframe: state.timeframe } });
+    box.innerHTML = `<div class="ai-head"><span>✨ Análisis de ${esc(state.symbol)} · ${state.timeframe} · ${esc(r.model)}</span><button type="button" class="link" id="ai-close">Cerrar</button></div>${md(r.text)}
+      <p class="muted small">La IA puede equivocarse. Úsalo para aprender a leer el gráfico, no como consejo de inversión.</p>`;
+    $('#ai-close').addEventListener('click', () => box.classList.add('hidden'));
+  } catch (err) {
+    box.innerHTML = `<p class="error">${esc(err.message)}</p>`;
+  } finally {
+    btn.disabled = false;
+    loadAiInfo();
+  }
+});
+
+$('#j-list').addEventListener('click', async (e) => {
+  const id = e.target.dataset.jAi;
+  if (!id) return;
+  const row = e.target.closest('.jrow');
+  let box = row.querySelector('.ai-box');
+  if (!box) { row.insertAdjacentHTML('beforeend', '<div class="ai-box"></div>'); box = row.querySelector('.ai-box'); }
+  if (!state.ai?.enabled) { box.innerHTML = `<p>${esc(AI_OFF_MSG)}</p>`; return; }
+  box.innerHTML = '<div class="ai-head">✨ Revisando la operación…</div>';
+  try {
+    const r = await api('/ai/review/' + id, { method: 'POST' });
+    box.innerHTML = `<div class="ai-head">✨ Revisión de tu mentor IA · ${esc(r.model)}</div>${md(r.text)}`;
+  } catch (err) {
+    box.innerHTML = `<p class="error">${esc(err.message)}</p>`;
+  }
+});
+
 const fmtDuration = (m) => (m >= 1440 ? `${Math.floor(m / 1440)} d ${Math.floor((m % 1440) / 60)} h` : m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`);
 
 // ---------- Horarios de mercado ----------
@@ -1886,7 +2010,7 @@ async function enterApp() {
   $('#auth').classList.add('hidden');
   $('#app').classList.remove('hidden');
   await loadConfig();
-  await Promise.all([loadTickers(), loadMe(), loadStrategies(), loadJournalMeta(), loadAcademy()]);
+  await Promise.all([loadTickers(), loadMe(), loadStrategies(), loadJournalMeta(), loadAcademy(), loadAiInfo()]);
   $('#rp-form').symbol.innerHTML = state.config.symbols.map((x) => `<option>${esc(x)}</option>`).join('');
   if (!$('#rp-form').start.value) $('#rp-form').start.value = '2022-11-05T00:00';
   selectSymbol(state.symbol);

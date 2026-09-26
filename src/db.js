@@ -146,6 +146,34 @@ function openDb(file) {
       created_at  TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    -- Consultas a la IA por usuario y día (control de gasto).
+    CREATE TABLE IF NOT EXISTS ai_usage (
+      user_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      day      TEXT NOT NULL,
+      calls    INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (user_id, day)
+    );
+
+    -- Decisiones de los bots IA con su razonamiento (para aprender de ellas).
+    CREATE TABLE IF NOT EXISTS ai_decisions (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      bot_id      INTEGER NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+      candle_ts   INTEGER NOT NULL,
+      price       REAL NOT NULL,
+      action      TEXT NOT NULL,
+      confidence  REAL NOT NULL,
+      size_pct    REAL,
+      stop        REAL,
+      target      REAL,
+      reasoning   TEXT,
+      factors     TEXT,
+      executed    INTEGER NOT NULL DEFAULT 0,
+      note        TEXT,
+      model       TEXT,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ai_decisions ON ai_decisions(bot_id, id DESC);
     CREATE INDEX IF NOT EXISTS idx_activity ON activity(user_id, kind);
     CREATE INDEX IF NOT EXISTS idx_bot_events ON bot_events(bot_id, id DESC);
     CREATE INDEX IF NOT EXISTS idx_trades_user ON trades(user_id, id DESC);

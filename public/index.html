@@ -145,9 +145,11 @@
               <button type="button" class="tool" data-tool="rect" title="Dos clics: esquinas opuestas">▭ Zona</button>
               <button type="button" class="tool" id="tool-undo" title="Borrar el último dibujo">↶ Deshacer</button>
               <button type="button" class="tool" id="tool-clear">🗑️ Borrar todo</button>
+              <button type="button" class="tool ai-btn" id="ai-analyze" title="Pide a la IA un análisis educativo de este gráfico">✨ Analizar con IA</button>
             </div>
             <p class="hint" id="tool-hint">Pasa el ratón por el gráfico para ver la cruz de precio y los datos de cada vela.</p>
             <canvas id="chart"></canvas>
+            <div id="ai-analysis" class="ai-box hidden"></div>
           </div>
           <div class="card">
             <h2>Operar</h2>
@@ -175,7 +177,7 @@
                 <summary>🧮 Calculadora de riesgo</summary>
                 <p class="hint">Decide cuánto quieres perder como máximo si el precio toca tu stop; la calculadora te dice cuánto comprar.</p>
                 <div class="row2">
-                  <label>Riesgo (% de tu patrimonio) <input name="riskPct" type="number" step="0.1" min="0.1" max="100" value="1"></label>
+                  <label>Riesgo (% de tu patrimonio) <input name="riskPct" type="number" step="any" min="0.1" max="100" value="1"></label>
                   <label>Stop-loss (precio) <input name="stop" type="number" step="any" min="0"></label>
                 </div>
                 <div class="row2">
@@ -370,11 +372,29 @@
               <button type="button" class="tab active" data-bot-type="signal" title="Opera según una estrategia">🧠 Señales</button>
               <button type="button" class="tab" data-bot-type="dca" title="Compra periódica">📅 DCA</button>
               <button type="button" class="tab" data-bot-type="grid" title="Compra y vende en un rango">🔲 Grid</button>
+              <button type="button" class="tab" data-bot-type="ai" title="Un agente de IA decide en cada vela">✨ IA</button>
             </div>
             <p class="muted small" id="bot-type-desc"></p>
             <form id="bot-form">
               <label>Nombre (opcional) <input name="name" maxlength="40" placeholder="p. ej. BTC tendencia"></label>
               <label>Par <select name="symbol"></select></label>
+
+              <div data-for="ai">
+                <p class="ai-off hidden">⚠️ La IA no está configurada en este servidor. Quien lo administre debe definir la variable <code>ANTHROPIC_API_KEY</code> (clave de la API de Anthropic) y reiniciarlo.</p>
+                <label>Temporalidad
+                  <select name="aiTimeframe"><option>15m</option><option selected>1h</option><option>4h</option><option>1d</option></select>
+                </label>
+                <label>Instrucciones para la IA (opcional)
+                  <textarea name="instructions" rows="3" maxlength="1000" placeholder="p. ej. Sé conservador, opera sólo a favor de la tendencia y busca entradas en FVG dentro de las kill zones."></textarea>
+                </label>
+                <div class="row2">
+                  <label>Confianza mínima para comprar
+                    <select name="minConfidence"><option value="0.5">50 %</option><option value="0.6" selected>60 %</option><option value="0.7">70 %</option><option value="0.8">80 %</option></select>
+                  </label>
+                  <label>Stop máximo % <input name="maxStopPct" type="number" step="any" min="0.2" max="30" value="5" title="La IA no puede poner el stop más lejos que esto"></label>
+                </div>
+                <p class="hint" id="ai-usage"></p>
+              </div>
 
               <div data-for="signal">
                 <label>Temporalidad
@@ -385,8 +405,8 @@
                 <div id="bot-params" class="params"></div>
               </div>
 
-              <div data-for="signal dca">
-                <label><span data-for="signal">USD por operación</span><span data-for="dca">USD por compra</span>
+              <div data-for="signal dca ai">
+                <label><span data-for="signal ai">USD por operación</span><span data-for="dca">USD por compra</span>
                   <input name="amount" type="number" step="any" min="1" value="500"></label>
               </div>
 
@@ -421,6 +441,7 @@
           </div>
           <div class="card">
             <h2>Mis bots</h2>
+            <div id="bots-compare"></div>
             <div id="bots-list"></div>
           </div>
         </div>

@@ -6,25 +6,33 @@
 //            un Y % y vende todo al alcanzar el take-profit sobre el precio medio.
 //  - grid:   divide un rango de precios en N niveles; compra en cada nivel al bajar y
 //            vende un nivel más arriba al subir.
+//  - ai:     un agente de IA (Claude) recibe el resumen del mercado al cierre de cada vela y
+//            decide comprar, vender o mantener, explicando por qué. El servidor valida y
+//            limita cada decisión (confianza mínima, tamaño, stop obligatorio y máximo).
 // Cada bot sólo opera con lo que él mismo compró; no toca tus compras manuales.
 const { resolve } = require('./strategies');
 const { validateDefinition } = require('./custom');
 const { TIMEFRAME_MS } = require('./market');
 const { BrokerError } = require('./broker');
+const { marketContext } = require('./ai');
 
 const MAX_BOTS = 10;
 const MAX_EVENTS = 200;
-const TYPES = ['signal', 'dca', 'grid'];
+const TYPES = ['signal', 'dca', 'grid', 'ai'];
+const MAX_AI_BOTS = 3;
+const AI_TIMEFRAMES = ['15m', '1h', '4h', '1d']; // no menos de 15m: cada vela es una consulta a la IA
 
 const num = (v, def = 0) => (v === undefined || v === null || v === '' ? def : Number(v));
 const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 const fmt = (p) => (p >= 100 ? p.toFixed(2) : p >= 1 ? p.toFixed(4) : p.toPrecision(4));
 
 class BotManager {
-  constructor(db, market, broker, { intervalMs = 20000 } = {}) {
+  constructor(db, market, broker, { intervalMs = 20000, advisor = null } = {}) {
     this.db = db;
     this.market = market;
     this.broker = broker;
+    this.advisor = advisor;
+    this.thinking = new Set(); // bots IA con una consulta en curso
     this.intervalMs = intervalMs;
     this.running = false;
   }
@@ -73,6 +81,15 @@ class BotManager {
       row.amount = this.validAmount(body.amount);
       row.config = this.dcaConfig(body);
       row.config.state = { buys: 0, cost: 0, lastBuyAt: 0, lastBuyPrice: null };
+    } else if (type === 'ai') {
+      if (!this.advisor?.enabled) throw new BrokerError('La IA no está configurada en este servidor: define la variable ANTHROPIC_API_KEY', 503);
+      const { n: ais } = this.db.prepare("SELECT COUNT(*) AS n FROM bots WHERE user_id = ? AND type = 'ai'").get(userId);
+      if (ais >= MAX_AI_BOTS) throw new BrokerError(`Máximo ${MAX_AI_BOTS} bots IA por usuario`);
+      row.timeframe = body.timeframe || '1h';
+      if (!AI_TIMEFRAMES.includes(row.timeframe)) throw new BrokerError('Los bots IA usan velas de 15m o más');
+      row.amount = this.validAmount(body.amount);
+      row.strategy = 'ai';
+      row.config = { ...this.aiConfig(body), stop: null, target: null };
     } else {
       row.config = this.gridConfig(body);
       row.amount = row.config.investment / row.config.grids;
@@ -85,9 +102,10 @@ class BotManager {
         row.stop_loss, row.take_profit, row.trailing, JSON.stringify(row.config), 'Creado');
     const bot = this.raw(Number(r.lastInsertRowid));
     this.event(bot, type === 'signal' ? 'Bot creado. Evaluará la estrategia al cierre de cada vela.'
-      : type === 'dca' ? 'Bot DCA creado.' : 'Bot grid creado.');
+      : type === 'dca' ? 'Bot DCA creado.' : type === 'ai' ? 'Bot IA creado. Consultará a la IA al cierre de cada vela.' : 'Bot grid creado.');
     if (type === 'grid') this.initGrid(bot);
     else if (type === 'dca') this.runDca(this.raw(bot.id));
+    else if (type === 'ai') this.runAi(bot).catch((e) => this.log(bot, 'Error de la IA: ' + e.message));
     else this.runSignal(bot).catch(() => {});
     return this.get(userId, bot.id);
   }
@@ -105,6 +123,14 @@ class BotManager {
       intervalHours,
       dropPct: clamp(num(b.dropPct), 0, 90),
       maxBuys: Math.round(clamp(num(b.maxBuys), 0, 1000)),
+    };
+  }
+
+  aiConfig(b) {
+    return {
+      instructions: String(b.instructions ?? '').trim().slice(0, 1000),
+      minConfidence: clamp(num(b.minConfidence, 0.6), 0, 1),
+      maxStopPct: clamp(num(b.maxStopPct, 8), 0.2, 30),
     };
   }
 
@@ -144,6 +170,7 @@ class BotManager {
     const unrealized = b.qty > 0 && price ? (price - b.entry_price) * b.qty : 0;
     let strategyName;
     if (b.type === 'dca') strategyName = 'DCA (compra periódica)';
+    else if (b.type === 'ai') strategyName = 'Agente IA';
     else if (b.type === 'grid') strategyName = 'Grid';
     else if (b.strategy === 'custom') strategyName = params.definition?.name ?? 'Personalizada';
     else {
@@ -159,6 +186,12 @@ class BotManager {
   events(userId, id) {
     this.get(userId, id);
     return this.db.prepare('SELECT message, created_at FROM bot_events WHERE bot_id = ? ORDER BY id DESC LIMIT 100').all(id);
+  }
+
+  decisions(userId, id) {
+    this.get(userId, id);
+    return this.db.prepare('SELECT * FROM ai_decisions WHERE bot_id = ? ORDER BY id DESC LIMIT 50').all(id)
+      .map((d) => ({ ...d, factors: JSON.parse(d.factors || '[]') }));
   }
 
   trades(userId, id) {
@@ -188,6 +221,13 @@ class BotManager {
     } else if (bot.type === 'dca') {
       const cfg = { ...bot.config, ...this.dcaConfig({ ...bot.config, ...body }) };
       sets.config = JSON.stringify(cfg);
+    } else if (bot.type === 'ai') {
+      sets.config = JSON.stringify({ ...bot.config, ...this.aiConfig({ ...bot.config, ...body }) });
+      if (body.timeframe !== undefined && body.timeframe !== bot.timeframe) {
+        if (!AI_TIMEFRAMES.includes(body.timeframe)) throw new BrokerError('Los bots IA usan velas de 15m o más');
+        sets.timeframe = body.timeframe;
+        sets.last_candle = null;
+      }
     } else if (['low', 'high', 'grids', 'investment'].some((k) => body[k] !== undefined)) {
       throw new BrokerError('El rango de un grid no se puede cambiar con el bot en marcha: elimínalo y crea otro');
     }
@@ -236,9 +276,10 @@ class BotManager {
     if (this.running) return;
     this.running = true;
     try {
-      for (const bot of this.db.prepare("SELECT * FROM bots WHERE active = 1 AND type IN ('signal', 'dca')").all()) {
+      for (const bot of this.db.prepare("SELECT * FROM bots WHERE active = 1 AND type IN ('signal', 'dca', 'ai')").all()) {
         try {
           if (bot.type === 'signal') await this.runSignal(bot);
+          else if (bot.type === 'ai') await this.runAi(bot);
           else this.runDca(bot);
         } catch (e) {
           this.log(bot, 'Error: ' + e.message);
@@ -254,6 +295,7 @@ class BotManager {
       try {
         if (bot.type === 'grid') this.tickGrid(bot);
         else if (bot.type === 'dca') this.tickDca(bot);
+        else if (bot.type === 'ai') this.tickAi(bot);
         else this.tickSignal(bot);
       } catch (e) {
         this.log(bot, 'Error: ' + e.message);
@@ -316,6 +358,7 @@ class BotManager {
       cfg.state = { ...cfg.state, buys: 0, cost: 0, lastBuyPrice: null };
       extra.config = cfg;
     }
+    if (bot.type === 'ai') extra.config = { ...JSON.parse(bot.config), stop: null, target: null };
     this.log(bot, `${reason}: vendió ${+t.qty.toFixed(8)} a ${fmt(t.price)} (G/P ${pnl.toFixed(2)} USD)`, extra);
   }
 
@@ -359,6 +402,119 @@ class BotManager {
     if (bot.stop_loss > 0 && bid <= bot.entry_price * (1 - bot.stop_loss / 100)) this.sellAll(bot, 'Stop-loss');
     else if (bot.trailing > 0 && bid <= bot.peak * (1 - bot.trailing / 100)) this.sellAll(bot, 'Trailing stop');
     else if (bot.take_profit > 0 && bid >= bot.entry_price * (1 + bot.take_profit / 100)) this.sellAll(bot, 'Take-profit');
+  }
+
+  // --- Bot IA ---
+
+  // Al cerrar cada vela: resumen del mercado → decisión de la IA → validación → ejecución.
+  async runAi(bot) {
+    if (!bot.active || !this.advisor || this.thinking.has(bot.id)) return;
+    const step = TIMEFRAME_MS[bot.timeframe];
+    const candles = await this.market.ohlcv(bot.symbol, bot.timeframe, 300);
+    const closed = candles.filter((c) => c[0] + step <= Date.now());
+    if (closed.length < 30) return;
+    const last = closed[closed.length - 1];
+    if (bot.last_candle === last[0]) return;
+    // Se marca la vela antes de llamar: si la IA falla, no se reintenta en bucle.
+    this.db.prepare('UPDATE bots SET last_candle = ? WHERE id = ?').run(last[0], bot.id);
+    this.thinking.add(bot.id);
+    try {
+      const cfg = JSON.parse(bot.config);
+      const price = last[4];
+      const memory = this.db
+        .prepare('SELECT candle_ts, price, action, confidence, reasoning, executed, note FROM ai_decisions WHERE bot_id = ? ORDER BY id DESC LIMIT 5')
+        .all(bot.id).reverse()
+        .map((d) => ({
+          when: new Date(d.candle_ts).toISOString().slice(0, 16), action: d.action, confidence: d.confidence, price: d.price,
+          price_change_since_pct: Number((((price - d.price) / d.price) * 100).toFixed(2)),
+          executed: !!d.executed, note: d.note, reasoning: String(d.reasoning || '').slice(0, 200),
+        }));
+      const position = bot.qty > 0
+        ? { open: true, qty: bot.qty, entry_price: bot.entry_price, stop_loss: cfg.stop, take_profit: cfg.target, unrealized_pct: Number((((price - bot.entry_price) / bot.entry_price) * 100).toFixed(2)) }
+        : { open: false };
+      const account = {
+        budget_per_trade_usd: bot.amount, realized_pnl_usd: Number(bot.realized.toFixed(2)), trades: bot.trade_count,
+        fee_pct_per_side: this.broker.feeFor(bot.symbol) * 100,
+        limits: { min_confidence_to_buy: cfg.minConfidence, max_stop_distance_pct: cfg.maxStopPct },
+      };
+      const d = await this.advisor.decide(bot.user_id, {
+        context: marketContext(bot.symbol, bot.timeframe, closed), position, account, instructions: cfg.instructions, memory,
+      });
+      this.applyAi(this.raw(bot.id), d, last);
+    } finally {
+      this.thinking.delete(bot.id);
+    }
+  }
+
+  // Valida la decisión de la IA contra los límites del bot y la ejecuta.
+  applyAi(bot, d, candle) {
+    if (!bot) return;
+    const cfg = JSON.parse(bot.config);
+    const confidence = clamp(num(d.confidence), 0, 1);
+    const sizePct = clamp(num(d.size_pct), 0, 100);
+    const action = ['buy', 'sell', 'hold'].includes(d.action) ? d.action : 'hold';
+    let stop = num(d.stop_loss) > 0 ? num(d.stop_loss) : null;
+    let target = num(d.take_profit) > 0 ? num(d.take_profit) : null;
+    let executed = false;
+    const notes = [];
+
+    if (action === 'buy') {
+      if (bot.qty > 0) notes.push('Ya había una posición abierta');
+      else if (confidence < cfg.minConfidence) notes.push(`Confianza ${(confidence * 100).toFixed(0)} % por debajo del mínimo ${(cfg.minConfidence * 100).toFixed(0)} %`);
+      else {
+        const price = this.broker.quote(bot.symbol, 'buy');
+        const maxDist = cfg.maxStopPct / 100;
+        if (!(stop > 0 && stop < price)) {
+          stop = price * (1 - Math.min(maxDist, (bot.stop_loss || 3) / 100));
+          notes.push('Stop inválido o ausente: se puso uno automático');
+        } else if ((price - stop) / price > maxDist) {
+          stop = price * (1 - maxDist);
+          notes.push(`Stop demasiado lejos: recortado al ${cfg.maxStopPct} %`);
+        }
+        if (target !== null && !(target > price)) { target = null; notes.push('Objetivo inválido: ignorado'); }
+        const usd = (bot.amount * sizePct) / 100;
+        if (usd < this.broker.minNotional) notes.push('Tamaño demasiado pequeño');
+        else {
+          const t = this.buyUsd(bot, usd, 'decisión de la IA');
+          if (t) {
+            executed = true;
+            this.log(bot, `IA compró ${+t.qty.toFixed(8)} a ${fmt(t.price)} (confianza ${(confidence * 100).toFixed(0)} %) · stop ${fmt(stop)}${target ? ` · objetivo ${fmt(target)}` : ''}`, {
+              qty: t.qty, entry_price: t.price, trade_count: bot.trade_count + 1, config: { ...cfg, stop, target },
+            });
+          } else notes.push('No se pudo comprar (¿saldo insuficiente?)');
+        }
+      }
+    } else if (action === 'sell') {
+      if (bot.qty > 0) { this.sellAll(bot, `IA vendió (confianza ${(confidence * 100).toFixed(0)} %)`); executed = true; }
+      else notes.push('No había posición que vender');
+    } else if (bot.qty > 0) {
+      // "Mantener": la IA puede subir el stop para proteger ganancias, nunca bajarlo.
+      const bid = this.broker.quote(bot.symbol, 'sell');
+      const changes = {};
+      if (stop && stop > (cfg.stop ?? 0) && stop < bid) { changes.stop = stop; notes.push(`Stop subido a ${fmt(stop)}`); }
+      if (target && target > bid && target !== cfg.target) { changes.target = target; notes.push(`Objetivo ajustado a ${fmt(target)}`); }
+      if (Object.keys(changes).length) { executed = true; this.log(bot, 'IA ajustó la posición: ' + notes.join(' · '), { config: { ...cfg, ...changes } }); }
+    }
+
+    this.db
+      .prepare(`INSERT INTO ai_decisions (bot_id, candle_ts, price, action, confidence, size_pct, stop, target, reasoning, factors, executed, note, model)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(bot.id, candle[0], candle[4], action, confidence, sizePct, stop, target, String(d.reasoning ?? '').slice(0, 2000),
+        JSON.stringify((d.key_factors || []).slice(0, 5).map((f) => String(f).slice(0, 200))), executed ? 1 : 0, notes.join(' · ') || null, d.model ?? null);
+    if (!executed) {
+      const label = { buy: 'comprar', sell: 'vender', hold: 'mantener' }[action];
+      this.log(this.raw(bot.id), `IA decidió ${label} (confianza ${(confidence * 100).toFixed(0)} %)${notes.length ? ' · ' + notes.join(' · ') : ''}`, {}, action !== 'hold' || notes.length > 0);
+    }
+  }
+
+  tickAi(bot) {
+    if (!(bot.qty > 0)) return;
+    const t = this.market.tickers[bot.symbol];
+    if (!t?.last) return;
+    const bid = t.bid || t.last;
+    const cfg = JSON.parse(bot.config);
+    if (cfg.stop && bid <= cfg.stop) this.sellAll(bot, 'Stop-loss de la IA');
+    else if (cfg.target && bid >= cfg.target) this.sellAll(bot, 'Objetivo de la IA');
   }
 
   // --- Bot DCA ---

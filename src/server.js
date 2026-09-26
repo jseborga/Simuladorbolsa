@@ -8,11 +8,12 @@ const { backtest } = require('./backtest');
 const { publicList } = require('./strategies');
 const { schema, validateDefinition } = require('./custom');
 const { Academy } = require('./academy');
+const { AIAdvisor, marketContext } = require('./ai');
 
 const JOURNAL_SETUPS = ['Tendencia', 'Ruptura', 'Reversión', 'Soporte/resistencia', 'Cruce de medias', 'RSI/osciladores', 'FVG', 'Order Block', 'Barrida de liquidez', 'Noticia', 'DCA / largo plazo', 'Otro'];
 const JOURNAL_EMOTIONS = ['Tranquilo', 'Seguro', 'Dudoso', 'Ansioso', 'FOMO', 'Revancha', 'Aburrido', 'Eufórico'];
 
-function createApp(broker, market, bots) {
+function createApp(broker, market, bots, advisor = new AIAdvisor(broker.db)) {
   const app = express();
   const academy = new Academy(broker.db);
   app.use(express.json({ limit: '32kb' }));
@@ -141,6 +142,45 @@ function createApp(broker, market, bots) {
     res.status(201).json({ id: Number(r.lastInsertRowid) });
   });
 
+  // ---------- IA (Claude) ----------
+  api.get('/ai', auth, (req, res) => res.json(advisor.info(req.user.id)));
+
+  // Análisis educativo del gráfico actual.
+  api.post('/ai/analyze', auth, async (req, res) => {
+    const { symbol, timeframe = '1h' } = req.body ?? {};
+    if (!market.symbols.includes(symbol)) throw new BrokerError('Símbolo no soportado');
+    const candles = await market.ohlcv(symbol, String(timeframe), 300);
+    const r = await advisor.explain(req.user.id,
+      'Analiza este gráfico para un alumno que está aprendiendo. Incluye: 1) tendencia y estructura, 2) niveles clave (soportes/resistencias, FVG, order blocks, liquidez), 3) un escenario alcista y uno bajista, con qué los confirmaría y qué los invalidaría, 4) qué vigilar en las próximas velas. Termina con un recordatorio breve de gestión del riesgo.',
+      marketContext(symbol, String(timeframe), candles));
+    res.json(r);
+  });
+
+  // Revisión de una operación del diario: qué se hizo bien y qué mejorar.
+  api.post('/ai/review/:tradeId', auth, async (req, res) => {
+    const t = broker.db
+      .prepare('SELECT t.*, j.setup, j.emotion, j.notes, j.lesson FROM trades t LEFT JOIN journal j ON j.trade_id = t.id WHERE t.id = ? AND t.user_id = ?')
+      .get(Number(req.params.tradeId), req.user.id);
+    if (!t) throw new BrokerError('Operación no encontrada', 404);
+    // Para una venta, se incluye la compra previa del mismo activo (la entrada).
+    const entry = t.side === 'sell'
+      ? broker.db.prepare("SELECT t.*, j.setup, j.emotion, j.notes FROM trades t LEFT JOIN journal j ON j.trade_id = t.id WHERE t.user_id = ? AND t.symbol = ? AND t.side = 'buy' AND t.id < ? ORDER BY t.id DESC LIMIT 1").get(req.user.id, t.symbol, t.id)
+      : null;
+    const candles = await market.ohlcv(t.symbol, '1h', 300);
+    const orders = broker.db.prepare("SELECT type, side, price, status FROM orders WHERE user_id = ? AND symbol = ? AND created_at >= datetime(?, '-1 minute') ORDER BY id LIMIT 5")
+      .all(req.user.id, t.symbol, (entry ?? t).created_at);
+    const r = await advisor.explain(req.user.id,
+      'Revisa esta operación de un alumno como lo haría un buen mentor. Explica qué hizo bien, qué pudo mejorar (momento de entrada, stop-loss, tamaño de la posición, salida, emociones según sus notas) y termina con UNA lección concreta y accionable. Sé honesto pero amable.',
+      {
+        operacion: { lado: t.side, activo: t.symbol, cantidad: t.qty, precio: t.price, fecha_utc: t.created_at, comision: t.fee, resultado_realizado: t.side === 'sell' ? t.realized : null, notas_del_alumno: { setup: t.setup, emocion: t.emotion, notas: t.notes, leccion: t.lesson } },
+        entrada_previa: entry && { precio: entry.price, fecha_utc: entry.created_at, notas: { setup: entry.setup, emocion: entry.emotion, notas: entry.notes } },
+        ordenes_de_proteccion: orders,
+        patrimonio_actual: broker.portfolio(req.user.id).equity,
+        mercado_ahora_1h: marketContext(t.symbol, '1h', candles),
+      });
+    res.json(r);
+  });
+
   // ---------- Academia ----------
   api.get('/academy', auth, (req, res) => res.json(academy.progress(req.user.id)));
   api.post('/academy/lessons/:id', auth, (req, res) => res.json(academy.submit(req.user.id, req.params.id, req.body?.answers)));
@@ -251,6 +291,7 @@ function createApp(broker, market, bots) {
     res.json(bots.get(req.user.id, id));
   });
 
+  api.get('/bots/:id/decisions', auth, (req, res) => res.json(bots.decisions(req.user.id, Number(req.params.id))));
   api.get('/bots/:id/events', auth, (req, res) => res.json(bots.events(req.user.id, Number(req.params.id))));
   api.get('/bots/:id/trades', auth, (req, res) => res.json(bots.trades(req.user.id, Number(req.params.id))));
 
@@ -289,11 +330,13 @@ async function main() {
       Oro: process.env.FEE_RATE_GOLD !== undefined ? Number(process.env.FEE_RATE_GOLD) : 0.0005,
     },
   });
-  const bots = new BotManager(db, market, broker, { intervalMs: Number(process.env.BOT_INTERVAL_MS) || 20000 });
+  const advisor = new AIAdvisor(db);
+  console.log(advisor.enabled ? `[ia] activada con el modelo ${advisor.model}` : '[ia] desactivada: define ANTHROPIC_API_KEY para usarla');
+  const bots = new BotManager(db, market, broker, { intervalMs: Number(process.env.BOT_INTERVAL_MS) || 20000, advisor });
   await market.start();
   market.on('tick', () => broker.processOrders());
   bots.start();
-  createApp(broker, market, bots).listen(port, () => {
+  createApp(broker, market, bots, advisor).listen(port, () => {
     console.log(`Simulador de trading listo en http://localhost:${port}`);
   });
 }
