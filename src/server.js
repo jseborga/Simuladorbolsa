@@ -7,9 +7,14 @@ const { BotManager } = require('./bots');
 const { backtest } = require('./backtest');
 const { publicList } = require('./strategies');
 const { schema, validateDefinition } = require('./custom');
+const { Academy } = require('./academy');
+
+const JOURNAL_SETUPS = ['Tendencia', 'Ruptura', 'Reversión', 'Soporte/resistencia', 'Cruce de medias', 'RSI/osciladores', 'FVG', 'Order Block', 'Barrida de liquidez', 'Noticia', 'DCA / largo plazo', 'Otro'];
+const JOURNAL_EMOTIONS = ['Tranquilo', 'Seguro', 'Dudoso', 'Ansioso', 'FOMO', 'Revancha', 'Aburrido', 'Eufórico'];
 
 function createApp(broker, market, bots) {
   const app = express();
+  const academy = new Academy(broker.db);
   app.use(express.json({ limit: '32kb' }));
   app.use(express.static(path.join(__dirname, '..', 'public')));
 
@@ -63,11 +68,82 @@ function createApp(broker, market, bots) {
   api.get('/trades', auth, (req, res) => res.json(broker.trades(req.user.id)));
   api.get('/orders', auth, (req, res) => res.json(broker.orders(req.user.id)));
 
+  // Guarda las notas del diario escritas al abrir la operación (opcionales).
+  const saveJournal = (userId, tradeId, j) => {
+    if (!j || !tradeId) return;
+    const setup = JOURNAL_SETUPS.includes(j.setup) ? j.setup : null;
+    const emotion = JOURNAL_EMOTIONS.includes(j.emotion) ? j.emotion : null;
+    const notes = String(j.notes ?? '').slice(0, 2000) || null;
+    const lesson = String(j.lesson ?? '').slice(0, 1000) || null;
+    const rating = [1, 2, 3, 4, 5].includes(Number(j.rating)) ? Number(j.rating) : null;
+    broker.db
+      .prepare(`INSERT INTO journal (trade_id, user_id, setup, emotion, notes, lesson, rating) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(trade_id) DO UPDATE SET setup = excluded.setup, emotion = excluded.emotion, notes = excluded.notes,
+                lesson = excluded.lesson, rating = excluded.rating, updated_at = datetime('now')`)
+      .run(tradeId, userId, setup, emotion, notes, lesson, rating);
+  };
+
   api.post('/orders', auth, (req, res) => {
-    const { symbol, side, type = 'market', qty, price } = req.body ?? {};
-    if (type === 'market') return res.status(201).json({ trade: broker.marketOrder(req.user.id, symbol, side, qty) });
+    const { symbol, side, type = 'market', qty, price, stop, target, journal } = req.body ?? {};
+    if (type === 'market' && side === 'buy' && stop) {
+      const r = broker.bracketBuy(req.user.id, symbol, qty, stop, target);
+      saveJournal(req.user.id, r.trade.id, journal);
+      return res.status(201).json(r);
+    }
+    if (type === 'market') {
+      const trade = broker.marketOrder(req.user.id, symbol, side, qty);
+      saveJournal(req.user.id, trade.id, journal);
+      return res.status(201).json({ trade });
+    }
     res.status(201).json({ order: broker.placeOrder(req.user.id, symbol, side, type, qty, price) });
   });
+
+  // ---------- Diario de trading ----------
+  api.get('/journal', auth, (req, res) => {
+    const rows = broker.db
+      .prepare(`SELECT t.*, j.setup, j.emotion, j.notes, j.lesson, j.rating
+                FROM trades t LEFT JOIN journal j ON j.trade_id = t.id
+                WHERE t.user_id = ? ORDER BY t.id DESC LIMIT 1000`)
+      .all(req.user.id);
+    res.json({ setups: JOURNAL_SETUPS, emotions: JOURNAL_EMOTIONS, trades: rows });
+  });
+
+  api.put('/journal/:tradeId', auth, (req, res) => {
+    const id = Number(req.params.tradeId);
+    if (!broker.db.prepare('SELECT 1 FROM trades WHERE id = ? AND user_id = ?').get(id, req.user.id)) throw new BrokerError('Operación no encontrada', 404);
+    saveJournal(req.user.id, id, req.body ?? {});
+    res.json({ ok: true });
+  });
+
+  // ---------- Modo Replay ----------
+  api.get('/history', async (req, res) => {
+    const { symbol, timeframe = '1h', since, limit = 500 } = req.query;
+    try {
+      res.json(await market.history(String(symbol), String(timeframe), Number(since), Number(limit)));
+    } catch (e) {
+      throw new BrokerError(e.message, 400);
+    }
+  });
+
+  api.get('/replay-sessions', auth, (req, res) => {
+    res.json(broker.db.prepare('SELECT id, symbol, timeframe, start_ts, end_ts, initial, final, trades, win_rate, max_dd, created_at FROM replay_sessions WHERE user_id = ? ORDER BY id DESC LIMIT 50').all(req.user.id));
+  });
+
+  api.post('/replay-sessions', auth, (req, res) => {
+    const b = req.body ?? {};
+    if (!market.symbols.includes(b.symbol)) throw new BrokerError('Símbolo no soportado');
+    const nums = ['start_ts', 'end_ts', 'initial', 'final', 'trades', 'win_rate', 'max_dd'].map((k) => Number(b[k]));
+    if (nums.some((v) => !Number.isFinite(v))) throw new BrokerError('Datos de la sesión inválidos');
+    const data = JSON.stringify(Array.isArray(b.data) ? b.data.slice(0, 500) : []);
+    const r = broker.db
+      .prepare('INSERT INTO replay_sessions (user_id, symbol, timeframe, start_ts, end_ts, initial, final, trades, win_rate, max_dd, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(req.user.id, b.symbol, String(b.timeframe).slice(0, 4), ...nums, data.slice(0, 200000));
+    res.status(201).json({ id: Number(r.lastInsertRowid) });
+  });
+
+  // ---------- Academia ----------
+  api.get('/academy', auth, (req, res) => res.json(academy.progress(req.user.id)));
+  api.post('/academy/lessons/:id', auth, (req, res) => res.json(academy.submit(req.user.id, req.params.id, req.body?.answers)));
 
   api.delete('/orders/:id', auth, (req, res) => {
     broker.cancelOrder(req.user.id, Number(req.params.id));
@@ -97,6 +173,8 @@ function createApp(broker, market, bots) {
       strategy, params, definition, stopLoss, takeProfit, trailing, positionPct,
       initialCash: broker.initialCash, feeRate: broker.feeFor(symbol),
     });
+    const user = optionalUser(req);
+    if (user) academy.logActivity(user.id, 'backtest');
     res.json({ ...result, candles });
   });
 
@@ -127,6 +205,7 @@ function createApp(broker, market, bots) {
     const r = broker.db
       .prepare('INSERT INTO custom_strategies (user_id, name, definition, public) VALUES (?, ?, ?, ?)')
       .run(req.user.id, def.name, JSON.stringify(def), req.body?.public ? 1 : 0);
+    academy.logActivity(req.user.id, 'custom_strategy');
     res.status(201).json(presentCustom(broker.db.prepare('SELECT * FROM custom_strategies WHERE id = ?').get(Number(r.lastInsertRowid))));
   });
 
@@ -158,7 +237,9 @@ function createApp(broker, market, bots) {
   api.get('/bots', auth, (req, res) => res.json(bots.list(req.user.id)));
 
   api.post('/bots', auth, (req, res) => {
-    res.status(201).json(bots.create(req.user.id, req.body ?? {}));
+    const bot = bots.create(req.user.id, req.body ?? {});
+    academy.logActivity(req.user.id, 'bot');
+    res.status(201).json(bot);
   });
 
   // { active } pausa o reanuda; el resto de campos cambian la configuración.

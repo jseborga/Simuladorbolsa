@@ -38,6 +38,9 @@ class Market extends EventEmitter {
     this.tickers = {}; // symbol -> { symbol, last, bid, ask, change, percentage, high, low, volume, timestamp }
     this.timer = null;
     this.ohlcvCache = new Map();
+    this.historyCache = new Map();
+    this.historyExchanges = {};
+    this.historyIds = ['bitstamp', 'bitfinex', 'coinbase', ...exchanges];
   }
 
   async start() {
@@ -139,6 +142,54 @@ class Market extends EventEmitter {
     const data = await this.exchange.fetchOHLCV(symbol, timeframe, undefined, limit);
     this.ohlcvCache.set(key, { at: Date.now(), data });
     return data;
+  }
+
+  // Histórico antiguo para el modo Replay. Kraken sólo sirve las últimas 720 velas,
+  // así que se prueban exchanges que sí guardan años de datos.
+  async history(symbol, timeframe, since, limit = 500) {
+    if (!this.symbols.includes(symbol)) throw new Error('Símbolo no soportado');
+    if (!TIMEFRAME_MS[timeframe]) throw new Error('Temporalidad no soportada');
+    limit = Math.min(Math.max(Number(limit) || 500, 50), 2000);
+    since = Number(since);
+    if (!Number.isFinite(since)) throw new Error('Fecha inválida');
+    const key = `${symbol}|${timeframe}|${since}|${limit}`;
+    const cached = this.historyCache.get(key);
+    if (cached) return cached;
+    let result = null;
+    if (this.mode === 'live') {
+      for (const id of this.historyIds) {
+        try {
+          const ex = (this.historyExchanges[id] ||= new ccxt[id]({ enableRateLimit: true, timeout: 15000 }));
+          if (!ex.markets) await ex.loadMarkets();
+          if (!ex.markets[symbol] || !ex.timeframes?.[timeframe]) continue;
+          const out = [];
+          let cursor = since;
+          while (out.length < limit) {
+            const batch = await ex.fetchOHLCV(symbol, timeframe, cursor, Math.min(1000, limit - out.length));
+            const fresh = batch.filter((c) => !out.length || c[0] > out[out.length - 1][0]);
+            if (!fresh.length) break;
+            out.push(...fresh);
+            cursor = fresh[fresh.length - 1][0] + TIMEFRAME_MS[timeframe];
+            if (batch.length < 50) break;
+          }
+          // Algunos exchanges ignoran la fecha y devuelven lo más reciente: se descarta.
+          const startsNear = out.length && out[0][0] - since < (limit / 2) * TIMEFRAME_MS[timeframe];
+          if (out.length >= 50 && startsNear) { result = { source: ex.name, candles: out.slice(0, limit) }; break; }
+        } catch (e) {
+          console.warn(`[history] ${id}: ${String(e.message).slice(0, 80)}`);
+        }
+      }
+    }
+    if (!result) {
+      // Sin histórico disponible: velas simuladas a partir de la fecha pedida.
+      const step = TIMEFRAME_MS[timeframe];
+      const start = Math.floor(since / step) * step;
+      const candles = this.fakeCandles(this.price(symbol) || SEED_PRICES[symbol.split('/')[0]], step, limit, start + (limit - 1) * step, SIM_VOL[category(symbol)] / 0.004);
+      result = { source: 'Simulado', candles };
+    }
+    if (this.historyCache.size > 50) this.historyCache.delete(this.historyCache.keys().next().value);
+    this.historyCache.set(key, result);
+    return result;
   }
 
   // Modo simulado: genera un histórico una sola vez y lo va extendiendo con

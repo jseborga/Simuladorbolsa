@@ -102,6 +102,51 @@ function openDb(file) {
       created_at  TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    -- Diario de trading: notas del usuario sobre cada operación.
+    CREATE TABLE IF NOT EXISTS journal (
+      trade_id    INTEGER PRIMARY KEY REFERENCES trades(id) ON DELETE CASCADE,
+      user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      setup       TEXT,
+      emotion     TEXT,
+      notes       TEXT,
+      lesson      TEXT,
+      rating      INTEGER,
+      updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    -- Actividad del usuario (para comprobar las tareas de la Academia).
+    CREATE TABLE IF NOT EXISTS activity (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      kind        TEXT NOT NULL,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS lesson_progress (
+      user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      lesson_id     TEXT NOT NULL,
+      quiz_score    REAL NOT NULL,
+      completed_at  TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, lesson_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS replay_sessions (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      symbol      TEXT NOT NULL,
+      timeframe   TEXT NOT NULL,
+      start_ts    INTEGER NOT NULL,
+      end_ts      INTEGER NOT NULL,
+      initial     REAL NOT NULL,
+      final       REAL NOT NULL,
+      trades      INTEGER NOT NULL,
+      win_rate    REAL NOT NULL,
+      max_dd      REAL NOT NULL DEFAULT 0,
+      data        TEXT NOT NULL DEFAULT '[]',
+      created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_activity ON activity(user_id, kind);
     CREATE INDEX IF NOT EXISTS idx_bot_events ON bot_events(bot_id, id DESC);
     CREATE INDEX IF NOT EXISTS idx_trades_user ON trades(user_id, id DESC);
     CREATE INDEX IF NOT EXISTS idx_orders_open ON orders(status, symbol);
@@ -109,6 +154,8 @@ function openDb(file) {
   // Migración para bases de datos creadas con la versión anterior.
   const cols = db.prepare('PRAGMA table_info(trades)').all().map((c) => c.name);
   if (!cols.includes('bot_id')) db.exec('ALTER TABLE trades ADD COLUMN bot_id INTEGER');
+  const orderCols = db.prepare('PRAGMA table_info(orders)').all().map((c) => c.name);
+  if (!orderCols.includes('oco')) db.exec('ALTER TABLE orders ADD COLUMN oco TEXT'); // órdenes enlazadas (una cancela la otra)
   const botCols = db.prepare('PRAGMA table_info(bots)').all().map((c) => c.name);
   const add = {
     type: "TEXT NOT NULL DEFAULT 'signal'", // signal | dca | grid

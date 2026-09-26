@@ -106,6 +106,9 @@ function showView(v) {
   if (v === 'market') drawChart();
   if (v === 'backtest' && state.bt) drawBacktest();
   if (v === 'bots') loadBots(true);
+  if (v === 'journal') loadJournal();
+  if (v === 'replay') { loadReplaySessions(); renderReplay(); }
+  if (v === 'academy') { closeLesson(); loadAcademy(); }
   if (v === 'builder' && !$('#sb-form').name.value && !$$('#sb-entry .cond').length) $('#sb-new').click();
 }
 
@@ -116,7 +119,6 @@ async function loadConfig() {
   const b = $('#source-badge');
   b.textContent = live ? `● En vivo · ${state.config.exchange}` : '● Mercado simulado';
   b.className = 'badge ' + (live ? 'live' : 'sim');
-  $('#fee-text').textContent = `${(state.config.feeRate * 100).toFixed(2)} % del importe en cripto; ${((state.config.feeRates?.['EUR/USD'] ?? state.config.feeRate) * 100).toFixed(3)} % en forex, similar al spread de un bróker`;
   $('#auth-bonus').textContent = `Cada cuenta nueva recibe ${usd(state.config.initialCash)} virtuales.`;
   if (!state.symbol) state.symbol = state.config.symbols[0];
 }
@@ -457,8 +459,8 @@ function ictLayers(c, ind, tf) {
   return { zones, segments, labels, vbands, pd };
 }
 
-function drawChart() {
-  const c = state.candles;
+// Indicadores, paneles y capas ICT activos, para cualquier serie de velas (Mercado o Replay).
+function indicatorLayers(c, tf) {
   const cl = c.map((x) => x[4]);
   const ind = state.indicators;
   const overlays = [];
@@ -472,21 +474,36 @@ function drawChart() {
     band = Indicators.bollinger(cl, 20, 2);
     overlays.push({ label: 'BB sup', values: band.upper, color: '#4f8cff99' }, { label: 'BB inf', values: band.lower, color: '#4f8cff99' });
   }
+  return {
+    overlays, band,
+    panels: ['volume', 'rsi', 'macd', 'stoch', 'atr'].filter((k) => ind[k]),
+    zones: [], segments: [], labels: [], vbands: [], pd: null,
+    ...(c.length ? ictLayers(c, ind, tf) : {}),
+  };
+}
+
+function drawChart() {
+  const c = state.candles;
   const holding = state.me?.holdings.find((h) => h.symbol === state.symbol);
   const hlines = [];
   if (holding) hlines.push({ price: holding.avg_price, color: '#f5a524', label: 'Tu media' });
+  // Vista previa de la calculadora de riesgo.
+  if (state.calc) {
+    hlines.push({ price: state.calc.stop, color: '#f0525c', label: 'Stop' });
+    if (state.calc.target) hlines.push({ price: state.calc.target, color: '#1fbf75', label: 'Objetivo' });
+  }
   hlines.push({ price: state.tickers[state.symbol]?.last, color: '#4f8cff' });
   mainChart.set({
-    candles: c, overlays, band, hlines, timeframe: state.timeframe, visible: visibleCount(),
-    panels: ['volume', 'rsi', 'macd', 'stoch', 'atr'].filter((k) => ind[k]),
+    candles: c, hlines, timeframe: state.timeframe, visible: visibleCount(),
     drawings: state.drawings[state.symbol] || [],
-    ...(c.length ? ictLayers(c, ind, state.timeframe) : {}),
+    ...indicatorLayers(c, state.timeframe),
   });
 }
 
 window.addEventListener('resize', () => {
   drawChart();
   if (state.bt) drawBacktest();
+  if (state.rp && state.view === 'replay') renderReplay();
 });
 
 // ---------- Formulario de operación ----------
@@ -553,6 +570,7 @@ $$('[data-pct]').forEach((b) =>
 
 function updatePreview(syncQty = true) {
   if (!state.config || !state.symbol) return;
+  updateCalc();
   $('#type-hint').textContent = HINTS[form.type.value][state.side];
   const p = execPrice();
   // Si el usuario escribió un monto en USD, recalcula la cantidad con el nuevo precio.
@@ -577,12 +595,28 @@ form.addEventListener('submit', async (e) => {
   $('#trade-ok').textContent = '';
   const body = { symbol: state.symbol, side: state.side, type: form.type.value, qty: Number(form.qty.value) };
   if (body.type !== 'market') body.price = Number(form.price.value);
+  // Stop y objetivo automáticos de la calculadora de riesgo.
+  if (state.calc && form.bracket.checked && body.type === 'market' && body.side === 'buy') {
+    body.stop = state.calc.stop;
+    if (state.calc.target) body.target = state.calc.target;
+  }
+  if (body.type === 'market' && (form.jSetup.value || form.jEmotion.value || form.jNotes.value.trim())) {
+    body.journal = { setup: form.jSetup.value, emotion: form.jEmotion.value, notes: form.jNotes.value.trim() };
+  }
   try {
     const r = await api('/orders', { method: 'POST', body });
     if (r.trade) {
       const t = r.trade;
       $('#trade-ok').textContent = `${t.side === 'buy' ? 'Compraste' : 'Vendiste'} ${num(t.qty)} ${base(t.symbol)} a ${px(t.price)}` +
-        (t.side === 'sell' ? ` · G/P: ${usd(t.realized)}` : '');
+        (t.side === 'sell' ? ` · G/P: ${usd(t.realized)}` : '') +
+        (r.stopOrder ? ` · Stop en ${px(r.stopOrder.price)}${r.targetOrder ? ` y objetivo en ${px(r.targetOrder.price)} (OCO)` : ''}` : '') +
+        (body.journal ? ' · 📓 anotada en el diario' : '');
+      form.jSetup.value = ''; form.jEmotion.value = ''; form.jNotes.value = '';
+      if (r.stopOrder) {
+        $('#risk-calc').open = false;
+        form.stop.value = ''; form.target.value = '';
+        state.calc = null;
+      }
     } else if (r.order.status === 'filled') {
       $('#trade-ok').textContent = `Orden #${r.order.id} ejecutada al instante.`;
     } else {
@@ -1212,6 +1246,585 @@ $('#bots-list').addEventListener('submit', async (e) => {
   }
 });
 
+// ---------- Calculadora de riesgo ----------
+// Cantidad = (patrimonio × % de riesgo) ÷ (entrada − stop). Sólo para compras a mercado.
+function updateCalc() {
+  const box = $('#risk-calc');
+  const usable = state.side === 'buy' && form.type.value === 'market';
+  box.classList.toggle('hidden', !usable);
+  if (!usable || !box.open || !state.me) {
+    if (state.calc) { state.calc = null; drawChart(); }
+    return;
+  }
+  const entry = execPrice();
+  // Stop sugerido: 1,5 ATR por debajo del precio (fuera del "ruido" normal).
+  if (!form.stop.value && entry && state.candles.length > 20) {
+    const atr = Indicators.atr(state.candles, 14).at(-1);
+    if (atr) form.stop.value = fmtAxis(entry - atr * 1.5);
+  }
+  const stop = Number(form.stop.value);
+  const riskPct = Number(form.riskPct.value);
+  const out = $('#calc-out');
+  if (!(entry && stop > 0 && stop < entry && riskPct > 0)) {
+    out.innerHTML = '<dt>El stop debe estar por debajo del precio de entrada</dt><dd></dd>';
+    state.calc = null;
+    drawChart();
+    return;
+  }
+  const dist = entry - stop;
+  let target = Number(form.target.value) || null;
+  if (form.rr.value && document.activeElement !== form.target) {
+    target = entry + dist * Number(form.rr.value);
+    form.target.value = fmtAxis(target);
+  }
+  const riskUsd = (state.me.equity * riskPct) / 100;
+  const fee = feeOf(state.symbol);
+  const ideal = riskUsd / (dist + entry * fee * 2);
+  // No se puede comprar más de lo que permite el efectivo: en ese caso el riesgo real es menor.
+  const maxQty = Math.floor(((state.me.cash / (entry * (1 + fee))) * 0.999) * 1e8) / 1e8;
+  const capped = ideal > maxQty;
+  const qty = capped ? maxQty : ideal;
+  const realRisk = qty * (dist + entry * fee * 2);
+  const value = qty * entry;
+  const rr = target ? (target - entry) / dist : null;
+  state.calc = { qty, stop, target: target > entry ? target : null };
+  out.innerHTML = `
+    <dt>Pérdida máxima (stop)</dt><dd class="down">−${usd(realRisk)}</dd>
+    ${capped ? `<dt class="muted">Riesgo que querías</dt><dd class="muted">−${usd(riskUsd)}</dd>` : ''}
+    <dt>Cantidad</dt><dd>${num(qty, 6)} ${esc(base(state.symbol))}</dd>
+    <dt>Valor de la posición</dt><dd>${usd(value)} (${((value / state.me.equity) * 100).toFixed(1)} %)</dd>
+    <dt>Distancia al stop</dt><dd>${((dist / entry) * 100).toFixed(2)} %</dd>
+    ${target ? `<dt>Ganancia si llega al objetivo</dt><dd class="up">+${usd(qty * (target - entry))}</dd><dt>Relación R:R</dt><dd>1:${rr.toFixed(2)}</dd>` : ''}
+    ${capped ? '<dt class="warn-text">⚠️ Cantidad limitada por tu efectivo. El stop está muy cerca: aléjalo (p. ej. bajo un mínimo reciente) para arriesgar lo que querías.</dt><dd></dd>' : ''}`;
+  drawChart();
+}
+
+$('#risk-calc').addEventListener('toggle', updateCalc);
+for (const k of ['riskPct', 'stop', 'target', 'rr']) {
+  form[k].addEventListener('input', () => {
+    if (k === 'target') form.rr.value = '';
+    updateCalc();
+  });
+}
+$('#calc-apply').addEventListener('click', () => {
+  if (!state.calc) return;
+  form.qty.value = +state.calc.qty.toFixed(8);
+  form.usd.value = +(state.calc.qty * execPrice()).toFixed(2);
+  updatePreview(false);
+});
+
+// ---------- Diario de trading ----------
+async function loadJournalMeta() {
+  if (state.journalMeta) return;
+  const j = await api('/journal');
+  state.journalMeta = { setups: j.setups, emotions: j.emotions };
+  const opts = (list) => '<option value="">—</option>' + list.map((x) => `<option>${esc(x)}</option>`).join('');
+  form.jSetup.innerHTML = opts(j.setups);
+  form.jEmotion.innerHTML = opts(j.emotions);
+}
+
+// Estadísticas agrupadas de operaciones cerradas (ventas con G/P realizada).
+function groupStats(rows, keyFn) {
+  const groups = {};
+  for (const r of rows) {
+    const k = keyFn(r) || 'Sin anotar';
+    (groups[k] ||= []).push(r.realized);
+  }
+  return Object.entries(groups).map(([key, pnl]) => {
+    const wins = pnl.filter((x) => x > 0);
+    const loss = -pnl.filter((x) => x <= 0).reduce((a, b) => a + b, 0);
+    const total = pnl.reduce((a, b) => a + b, 0);
+    return { key, n: pnl.length, winRate: (wins.length / pnl.length) * 100, total, avg: total / pnl.length, pf: loss ? wins.reduce((a, b) => a + b, 0) / loss : wins.length ? Infinity : 0 };
+  }).sort((a, b) => b.total - a.total);
+}
+
+function statsTable(el, rows) {
+  $(el).innerHTML = `<thead><tr><th></th><th class="r">Ops.</th><th class="r">% ganadoras</th><th class="r">G/P total</th><th class="r">Media</th><th class="r">F. beneficio</th></tr></thead><tbody>` +
+    (rows.length ? rows.map((r) => `<tr><td>${esc(r.key)}</td><td class="r">${r.n}</td><td class="r">${r.winRate.toFixed(0)} %</td>
+      <td class="r ${cls(r.total)}">${usd(r.total)}</td><td class="r ${cls(r.avg)}">${usd(r.avg)}</td><td class="r">${r.pf === Infinity ? '∞' : r.pf.toFixed(2)}</td></tr>`).join('')
+      : '<tr><td colspan="6" class="muted">Todavía no hay operaciones cerradas.</td></tr>') + '</tbody>';
+}
+
+async function loadJournal() {
+  const j = await api('/journal');
+  state.journal = j;
+  // Las ventas heredan setup/emoción/hora de entrada de la última compra del mismo activo.
+  const asc = [...j.trades].sort((a, b) => a.id - b.id);
+  const lastBuy = {};
+  const closed = [];
+  for (const t of asc) {
+    if (t.side === 'buy') {
+      lastBuy[t.symbol] = { setup: t.setup || (t.bot_id ? `Bot #${t.bot_id}` : null), emotion: t.emotion, at: t.created_at };
+      continue;
+    }
+    const b = lastBuy[t.symbol] || {};
+    closed.push({ ...t, setup: t.setup || b.setup || (t.bot_id ? `Bot #${t.bot_id}` : null), emotion: t.emotion || b.emotion, entryAt: b.at || t.created_at });
+  }
+  const all = groupStats(closed, () => 'Total')[0];
+  const wins = closed.filter((t) => t.realized > 0), losses = closed.filter((t) => t.realized <= 0);
+  const avgWin = wins.length ? wins.reduce((a, t) => a + t.realized, 0) / wins.length : 0;
+  const avgLoss = losses.length ? losses.reduce((a, t) => a + t.realized, 0) / losses.length : 0;
+  const noted = j.trades.filter((t) => t.setup || t.notes || t.emotion).length;
+  const tile = (label, value, c = '') => `<div class="metric"><span>${label}</span><strong class="${c}">${value}</strong></div>`;
+  $('#j-metrics').innerHTML = [
+    tile('Operaciones cerradas', closed.length),
+    tile('% ganadoras', all ? `${all.winRate.toFixed(0)} %` : '—'),
+    tile('G/P realizada', all ? usd(all.total) : '—', cls(all?.total)),
+    tile('Ganancia media', wins.length ? usd(avgWin) : '—', 'up'),
+    tile('Pérdida media', losses.length ? usd(avgLoss) : '—', 'down'),
+    tile('Esperanza por operación', all ? usd(all.avg) : '—', cls(all?.avg)),
+    tile('Operaciones anotadas', `${noted} / ${j.trades.length}`),
+  ].join('');
+
+  const bySetup = groupStats(closed, (t) => t.setup);
+  const byEmotion = groupStats(closed, (t) => t.emotion);
+  const bySymbol = groupStats(closed, (t) => t.symbol);
+  const byTime = groupStats(closed, (t) => {
+    const ts = Date.parse(t.entryAt.replace(' ', 'T') + 'Z');
+    return Indicators.KILLZONES.find((k) => Indicators.inKillzone(ts, [k.id]))?.name || 'Fuera de kill zones';
+  });
+  statsTable('#j-by-setup', bySetup);
+  statsTable('#j-by-emotion', byEmotion);
+  statsTable('#j-by-symbol', bySymbol);
+  statsTable('#j-by-time', byTime);
+
+  // Conclusiones automáticas.
+  const tips = [];
+  const known = (rows) => rows.filter((r) => r.key !== 'Sin anotar' && r.n >= 2);
+  const bestSetup = known(bySetup)[0];
+  const worstSetup = known(bySetup).at(-1);
+  if (bestSetup && bestSetup.total > 0) tips.push(`✅ Tu mejor setup es <strong>${esc(bestSetup.key)}</strong>: ${bestSetup.n} operaciones, ${bestSetup.winRate.toFixed(0)} % ganadoras y ${usd(bestSetup.total)} en total.`);
+  if (worstSetup && worstSetup.total < 0 && worstSetup !== bestSetup) tips.push(`⚠️ El setup <strong>${esc(worstSetup.key)}</strong> te está costando dinero (${usd(worstSetup.total)}). ¿Deberías dejar de usarlo o revisarlo?`);
+  const badEmotion = known(byEmotion).filter((r) => r.total < 0).sort((a, b) => a.total - b.total)[0];
+  if (badEmotion) tips.push(`🧠 Cuando operas sintiéndote <strong>${esc(badEmotion.key)}</strong> pierdes de media ${usd(badEmotion.avg)} por operación.`);
+  if (wins.length && losses.length && Math.abs(avgLoss) > avgWin) tips.push(`📉 Tu pérdida media (${usd(avgLoss)}) es mayor que tu ganancia media (${usd(avgWin)}): revisa si mueves los stops o cierras las ganancias demasiado pronto.`);
+  if (j.trades.length >= 3 && noted / j.trades.length < 0.5) tips.push('📓 Anotas menos de la mitad de tus operaciones. Cuantas más anotes, más útiles serán estas estadísticas.');
+  if (!closed.length) tips.push('Cierra algunas operaciones (vende) para empezar a ver estadísticas. Añade una nota al abrirlas desde el panel Operar.');
+  $('#j-insights').innerHTML = tips.map((t) => `<p>${t}</p>`).join('');
+  renderJournalList();
+}
+
+function renderJournalList() {
+  const only = $('#j-only-empty').checked;
+  const rows = state.journal.trades.filter((t) => !only || !(t.setup || t.notes || t.emotion));
+  const stars = (n) => (n ? '★'.repeat(n) + '☆'.repeat(5 - n) : '');
+  $('#j-list').innerHTML = rows.length
+    ? rows.map((t) => `<div class="jrow" data-j="${t.id}">
+        <div class="head">
+          <span class="muted">${date(t.created_at)}</span>
+          <span class="pill ${t.side}">${t.side === 'buy' ? 'Compra' : 'Venta'}</span>
+          <strong>${esc(t.symbol)}</strong> ${num(t.qty)} a ${px(t.price)}
+          ${t.side === 'sell' ? `<span class="${cls(t.realized)}">${usd(t.realized)}</span>` : ''}
+          ${t.bot_id ? `<span class="tag">🤖 Bot #${t.bot_id}</span>` : ''}
+          <span class="tags">${t.setup ? `<span class="tag">${esc(t.setup)}</span>` : ''}${t.emotion ? `<span class="tag">${esc(t.emotion)}</span>` : ''}</span>
+          <span class="stars">${stars(t.rating)}</span>
+          <button class="link" data-j-edit="${t.id}">${t.setup || t.notes || t.emotion ? '✏️ Editar' : '📝 Anotar'}</button>
+        </div>
+        ${t.notes ? `<div class="note">${esc(t.notes)}</div>` : ''}
+        ${t.lesson ? `<div class="note">💡 ${esc(t.lesson)}</div>` : ''}
+      </div>`).join('')
+    : '<p class="muted">No hay operaciones.</p>';
+}
+
+$('#j-only-empty').addEventListener('change', renderJournalList);
+$('#j-list').addEventListener('click', (e) => {
+  const id = e.target.dataset.jEdit;
+  if (!id) return;
+  const t = state.journal.trades.find((x) => x.id === Number(id));
+  const row = e.target.closest('.jrow');
+  if (row.querySelector('form')) return;
+  const opts = (list, v) => '<option value="">—</option>' + list.map((x) => `<option${x === v ? ' selected' : ''}>${esc(x)}</option>`).join('');
+  row.insertAdjacentHTML('beforeend', `<form data-j-form="${id}">
+    <label>Setup <select name="setup">${opts(state.journal.setups, t.setup)}</select></label>
+    <label>Emoción <select name="emotion">${opts(state.journal.emotions, t.emotion)}</select></label>
+    <label>Valoración de la ejecución <select name="rating"><option value="">—</option>${[5, 4, 3, 2, 1].map((n) => `<option value="${n}"${t.rating === n ? ' selected' : ''}>${'★'.repeat(n)}</option>`).join('')}</select></label>
+    <label class="wide">¿Por qué entraste o saliste? <textarea name="notes" rows="2" maxlength="2000">${esc(t.notes || '')}</textarea></label>
+    <label class="wide">¿Qué aprendiste? <textarea name="lesson" rows="2" maxlength="1000">${esc(t.lesson || '')}</textarea></label>
+    <div class="btn-row wide"><button type="submit" class="primary">Guardar</button><button type="button" data-j-cancel>Cancelar</button></div>
+  </form>`);
+});
+$('#j-list').addEventListener('click', (e) => {
+  if (e.target.dataset.jCancel !== undefined) e.target.closest('form').remove();
+});
+$('#j-list').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  try {
+    await api('/journal/' + f.dataset.jForm, {
+      method: 'PUT',
+      body: { setup: f.setup.value, emotion: f.emotion.value, rating: Number(f.rating.value) || null, notes: f.notes.value, lesson: f.lesson.value },
+    });
+    toast('Nota guardada en el diario');
+    loadJournal();
+  } catch (err) {
+    toast(err.message);
+  }
+});
+
+// ---------- Modo Replay ----------
+const TF_MS = { '5m': 300e3, '15m': 900e3, '1h': 3600e3, '4h': 14400e3, '1d': 86400e3 };
+const WARMUP = 150; // velas previas visibles al empezar (para los indicadores)
+const rpChart = new Charts.CandleChart($('#rp-chart'));
+state.rp = null;
+
+function toLocalInput(ts) {
+  const d = new Date(ts);
+  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+  return d.toISOString().slice(0, 16);
+}
+
+$$('[data-rp-date]').forEach((b) => b.addEventListener('click', () => {
+  $('#rp-form').start.value = b.dataset.rpDate;
+  $('#rp-form').symbol.value = 'BTC/USD';
+}));
+$('#rp-random').addEventListener('click', () => {
+  const from = Date.UTC(2020, 0, 1), to = Date.now() - 45 * 86400e3;
+  $('#rp-form').start.value = toLocalInput(from + Math.random() * (to - from));
+  $('#rp-form').blind.checked = true;
+  toast('Fecha aleatoria elegida y oculta: ¡no hagas trampa!');
+});
+
+$('#rp-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  $('#rp-error').textContent = '';
+  if (state.rp && !state.rp.ended && state.rp.trades.length && !confirm('Hay una sesión en curso. ¿Empezar otra sin guardarla?')) return;
+  const tf = f.timeframe.value;
+  const start = f.start.value ? new Date(f.start.value).getTime() : NaN;
+  if (!Number.isFinite(start)) { $('#rp-error').textContent = 'Elige una fecha de inicio'; return; }
+  const count = Math.min(Math.max(Number(f.count.value) || 400, 50), 1500);
+  if (start + count * TF_MS[tf] > Date.now()) { $('#rp-error').textContent = 'La fecha es demasiado reciente para jugar tantas velas'; return; }
+  const btn = f.querySelector('button[type=submit]');
+  btn.disabled = true; btn.textContent = 'Cargando histórico…';
+  try {
+    const h = await api(`/history?symbol=${encodeURIComponent(f.symbol.value)}&timeframe=${tf}&since=${start - WARMUP * TF_MS[tf]}&limit=${WARMUP + count}`);
+    const candles = h.candles;
+    const startIdx = Math.max(20, candles.findIndex((c) => c[0] >= start));
+    stopReplay();
+    state.rp = {
+      symbol: f.symbol.value, tf, candles, idx: startIdx, startIdx, source: h.source, blind: f.blind.checked,
+      initial: state.config.initialCash, cash: state.config.initialCash, qty: 0, entry: null, entryIdx: null, entryFee: 0,
+      sl: null, tp: null, trades: [], equity: [state.config.initialCash], peak: state.config.initialCash, maxDD: 0, ended: false,
+    };
+    $('#rp-trade').classList.remove('hidden');
+    $('#rp-summary').classList.add('hidden');
+    for (const id of ['#rp-play', '#rp-step', '#rp-step10', '#rp-end']) $(id).disabled = false;
+    const simulated = h.source === 'Simulado';
+    $('#rp-source').textContent = simulated ? '⚠️ Datos simulados (no hay histórico real para esa fecha)' : `Histórico real · ${h.source}`;
+    $('#rp-source').className = 'badge ' + (simulated ? 'sim' : 'live');
+    renderReplay();
+  } catch (err) {
+    $('#rp-error').textContent = err.message;
+  } finally {
+    btn.disabled = false; btn.textContent = '▶ Empezar sesión';
+  }
+});
+
+function rpFee() {
+  return feeOf(state.rp.symbol);
+}
+
+function rpEquity() {
+  const r = state.rp;
+  return r.cash + r.qty * r.candles[r.idx][4];
+}
+
+function rpClose(price, reason) {
+  const r = state.rp;
+  const gross = r.qty * price;
+  const fee = gross * rpFee();
+  r.cash += gross - fee;
+  const cost = r.qty * r.entry + r.entryFee;
+  const pnl = gross - fee - cost;
+  r.trades.push({ entryIdx: r.entryIdx, exitIdx: r.idx, entry: r.entry, exit: price, qty: r.qty, pnl, pct: (pnl / cost) * 100, reason });
+  r.qty = 0; r.entry = null; r.entryIdx = null; r.sl = null; r.tp = null;
+  $('#rp-sl').value = ''; $('#rp-tp').value = '';
+}
+
+// Avanza una vela: revisa stop / objetivo con el mínimo y máximo de la nueva vela.
+function rpStep() {
+  const r = state.rp;
+  if (!r || r.ended) return;
+  if (r.idx >= r.candles.length - 1) { endReplay(); return; }
+  r.idx++;
+  const [, open, high, low] = r.candles[r.idx];
+  if (r.qty > 0) {
+    if (r.sl && low <= r.sl) rpClose(Math.min(open, r.sl), 'Stop-loss');
+    else if (r.tp && high >= r.tp) rpClose(Math.max(open, r.tp), 'Objetivo');
+  }
+  const eq = rpEquity();
+  r.equity.push(eq);
+  r.peak = Math.max(r.peak, eq);
+  r.maxDD = Math.max(r.maxDD, (r.peak - eq) / r.peak);
+}
+
+function renderReplay() {
+  const r = state.rp;
+  if (!r) return;
+  const c = r.candles.slice(0, r.idx + 1);
+  const last = c[c.length - 1];
+  const hlines = [];
+  if (r.qty > 0) {
+    hlines.push({ price: r.entry, color: '#f5a524', label: 'Entrada' });
+    if (r.sl) hlines.push({ price: r.sl, color: '#f0525c', label: 'Stop' });
+    if (r.tp) hlines.push({ price: r.tp, color: '#1fbf75', label: 'Objetivo' });
+  }
+  hlines.push({ price: last[4], color: '#4f8cff' });
+  const markers = [];
+  for (const t of r.trades) markers.push({ i: t.entryIdx, side: 'buy' }, { i: t.exitIdx, side: 'sell' });
+  if (r.qty > 0) markers.push({ i: r.entryIdx, side: 'buy' });
+  const hide = r.blind && !r.ended;
+  rpChart.set({ candles: c, hlines, markers, timeframe: r.tf, visible: 120, hideTime: hide, ...indicatorLayers(c, r.tf) });
+  $('#rp-title').textContent = hide ? `${r.symbol} · ${r.tf} · fecha oculta` : `${r.symbol} · ${r.tf}`;
+  $('#rp-price').textContent = px(last[4]);
+  $('#rp-date').textContent = hide ? '' : new Date(last[0]).toLocaleString('es', { dateStyle: 'medium', timeStyle: 'short' });
+  const played = r.idx - r.startIdx, total = r.candles.length - 1 - r.startIdx;
+  $('#rp-bar').style.width = `${(played / Math.max(total, 1)) * 100}%`;
+  const eq = rpEquity();
+  const unreal = r.qty > 0 ? r.qty * (last[4] - r.entry) : 0;
+  $('#rp-account').innerHTML = `
+    <dt>Vela</dt><dd>${played} / ${total}</dd>
+    <dt>Patrimonio</dt><dd class="${cls(eq - r.initial)}">${usd(eq)} (${pct(((eq - r.initial) / r.initial) * 100)})</dd>
+    <dt>Efectivo</dt><dd>${usd(r.cash)}</dd>
+    <dt>Posición</dt><dd>${r.qty > 0 ? `${num(r.qty, 6)} a ${px(r.entry)}` : 'Sin posición'}</dd>
+    ${r.qty > 0 ? `<dt>G/P abierta</dt><dd class="${cls(unreal)}">${usd(unreal)}</dd>` : ''}`;
+  $('#rp-buy').disabled = r.ended || r.qty > 0;
+  $('#rp-sell').disabled = r.ended || r.qty === 0;
+  $('#rp-trades tbody').innerHTML = r.trades.length
+    ? r.trades.map((t, i) => {
+        const d = (k) => (hide ? `vela ${k - r.startIdx}` : new Date(r.candles[k][0]).toLocaleString('es', { dateStyle: 'short', timeStyle: 'short' }));
+        return `<tr><td>${i + 1}</td><td>${d(t.entryIdx)}</td><td>${d(t.exitIdx)}</td><td class="r">${px(t.entry)}</td><td class="r">${px(t.exit)}</td>
+          <td>${esc(t.reason)}</td><td class="r ${cls(t.pnl)}">${usd(t.pnl)} (${pct(t.pct)})</td></tr>`;
+      }).join('')
+    : '<tr><td colspan="7" class="muted">Aún no has operado en esta sesión.</td></tr>';
+}
+
+function stopReplay() {
+  clearInterval(state.rpTimer);
+  state.rpTimer = null;
+  $('#rp-play').textContent = '▶';
+}
+
+$('#rp-play').addEventListener('click', () => {
+  if (state.rpTimer) return stopReplay();
+  $('#rp-play').textContent = '⏸';
+  state.rpTimer = setInterval(() => {
+    if (!state.rp || state.rp.ended || state.view !== 'replay') return stopReplay();
+    rpStep();
+    renderReplay();
+  }, 1000 / Number($('#rp-speed').value));
+});
+$('#rp-speed').addEventListener('change', () => {
+  if (state.rpTimer) { stopReplay(); $('#rp-play').click(); }
+});
+$('#rp-step').addEventListener('click', () => { rpStep(); renderReplay(); });
+$('#rp-step10').addEventListener('click', () => { for (let i = 0; i < 10; i++) rpStep(); renderReplay(); });
+document.addEventListener('keydown', (e) => {
+  if (state.view !== 'replay' || !state.rp || ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return;
+  if (e.key === 'ArrowRight') { e.preventDefault(); rpStep(); renderReplay(); }
+  if (e.key === ' ') { e.preventDefault(); $('#rp-play').click(); }
+});
+
+$$('[data-rp-pct]').forEach((b) => b.addEventListener('click', () => {
+  if (!state.rp) return;
+  $('#rp-usd').value = Math.floor((state.rp.cash * Number(b.dataset.rpPct)) / 100 / (1 + rpFee()));
+}));
+
+$('#rp-buy').addEventListener('click', () => {
+  const r = state.rp;
+  $('#rp-trade-error').textContent = '';
+  if (!r || r.ended || r.qty > 0) return;
+  const price = r.candles[r.idx][4];
+  const usdAmt = Math.min(Number($('#rp-usd').value), r.cash / (1 + rpFee()));
+  const sl = Number($('#rp-sl').value) || null, tp = Number($('#rp-tp').value) || null;
+  if (!(usdAmt >= 1)) { $('#rp-trade-error').textContent = 'Monto inválido'; return; }
+  if (sl && sl >= price) { $('#rp-trade-error').textContent = 'El stop debe estar por debajo del precio actual'; return; }
+  if (tp && tp <= price) { $('#rp-trade-error').textContent = 'El objetivo debe estar por encima del precio actual'; return; }
+  r.qty = usdAmt / price;
+  r.entryFee = usdAmt * rpFee();
+  r.cash -= usdAmt + r.entryFee;
+  r.entry = price; r.entryIdx = r.idx; r.sl = sl; r.tp = tp;
+  renderReplay();
+});
+$('#rp-sell').addEventListener('click', () => {
+  const r = state.rp;
+  if (!r || r.qty === 0) return;
+  rpClose(r.candles[r.idx][4], 'Manual');
+  renderReplay();
+});
+for (const [id, key] of [['#rp-sl', 'sl'], ['#rp-tp', 'tp']]) {
+  $(id).addEventListener('input', () => {
+    if (state.rp?.qty > 0) { state.rp[key] = Number($(id).value) || null; renderReplay(); }
+  });
+}
+
+async function endReplay() {
+  const r = state.rp;
+  if (!r || r.ended) return;
+  stopReplay();
+  if (r.qty > 0) rpClose(r.candles[r.idx][4], 'Fin de la sesión');
+  r.ended = true;
+  for (const id of ['#rp-play', '#rp-step', '#rp-step10', '#rp-end']) $(id).disabled = true;
+  const final = r.cash;
+  const wins = r.trades.filter((t) => t.pnl > 0);
+  const start = r.candles[r.startIdx], end = r.candles[r.idx];
+  const bh = ((end[4] - start[4]) / start[4]) * 100;
+  const ret = ((final - r.initial) / r.initial) * 100;
+  const tile = (label, value, c = '') => `<div class="metric"><span>${label}</span><strong class="${c}">${value}</strong></div>`;
+  $('#rp-metrics').innerHTML = [
+    tile('Tu resultado', pct(ret), cls(ret)),
+    tile('Comprar y mantener', pct(bh), cls(bh)),
+    tile('Operaciones', r.trades.length),
+    tile('% ganadoras', r.trades.length ? `${((wins.length / r.trades.length) * 100).toFixed(0)} %` : '—'),
+    tile('Máxima caída', `-${(r.maxDD * 100).toFixed(2)} %`, r.maxDD ? 'down' : ''),
+    tile('Mejor / peor', r.trades.length ? `${pct(Math.max(...r.trades.map((t) => t.pct)))} / ${pct(Math.min(...r.trades.map((t) => t.pct)))}` : '—'),
+  ].join('');
+  $('#rp-verdict').textContent = `${r.symbol} ${r.tf} del ${new Date(start[0]).toLocaleString('es')} al ${new Date(end[0]).toLocaleString('es')}. ` +
+    (r.trades.length === 0 ? 'No operaste: a veces no operar también es una decisión, pero para practicar ¡lánzate!'
+      : ret > bh ? '¡Superaste a comprar y mantener!' : 'Comprar y mantener habría dado más: revisa tus entradas y salidas.');
+  $('#rp-summary').classList.remove('hidden');
+  renderReplay();
+  try {
+    await api('/replay-sessions', {
+      method: 'POST',
+      body: {
+        symbol: r.symbol, timeframe: r.tf, start_ts: start[0], end_ts: end[0], initial: r.initial, final,
+        trades: r.trades.length, win_rate: r.trades.length ? (wins.length / r.trades.length) * 100 : 0, max_dd: r.maxDD * 100,
+        data: r.trades.map((t) => ({ ...t, entryTime: r.candles[t.entryIdx][0], exitTime: r.candles[t.exitIdx][0] })),
+      },
+    });
+    toast('Sesión guardada');
+    loadReplaySessions();
+  } catch (err) {
+    toast('No se pudo guardar la sesión: ' + err.message);
+  }
+}
+$('#rp-end').addEventListener('click', () => {
+  if (confirm('¿Terminar la sesión? Se cerrará la posición abierta y se guardará el resultado.')) endReplay();
+});
+
+async function loadReplaySessions() {
+  const list = await api('/replay-sessions');
+  $('#rp-sessions').innerHTML = list.length
+    ? list.map((s) => {
+        const ret = ((s.final - s.initial) / s.initial) * 100;
+        return `<div class="sess"><strong>${esc(s.symbol)}</strong> ${esc(s.timeframe)} · <span class="${cls(ret)}">${pct(ret)}</span>
+          <div class="muted small">${new Date(s.start_ts).toLocaleDateString('es')} → ${new Date(s.end_ts).toLocaleDateString('es')} · ${s.trades} ops · ${s.win_rate.toFixed(0)} % ganadoras · caída máx. ${s.max_dd.toFixed(1)} %</div></div>`;
+      }).join('')
+    : '<p class="muted small">Todavía no has completado ninguna sesión.</p>';
+}
+
+// ---------- Academia ----------
+async function loadAcademy() {
+  state.ac = await api('/academy');
+  const pctDone = Math.round((state.ac.completed / state.ac.total) * 100);
+  $('#academy-pct').textContent = `${pctDone}%`;
+  if (state.view === 'academy') renderAcademy();
+}
+
+const level = (xp) => Math.floor(xp / 300) + 1;
+
+function renderAcademy() {
+  const ac = state.ac;
+  if (!ac) return;
+  const pctDone = (ac.completed / ac.total) * 100;
+  $('#ac-bar').style.width = pctDone + '%';
+  $('#ac-xp').textContent = `Nivel ${level(ac.xp)} · ${ac.xp} XP`;
+  $('#ac-summary').textContent = `${ac.completed} de ${ac.total} lecciones completadas (${pctDone.toFixed(0)} %) · ${ac.badges.length} de ${Courses.BADGES.length} insignias`;
+  $('#ac-badges').innerHTML = Courses.BADGES.map((b) => `<div class="badge-item${ac.badges.includes(b.id) ? ' on' : ''}" title="${esc(b.desc)}"><span class="ic">${b.icon}</span><span><strong>${esc(b.name)}</strong><br><span class="muted">${esc(b.desc)}</span></span></div>`).join('');
+  $('#ac-modules').innerHTML = Courses.MODULES.map((m) => {
+    const done = m.lessons.filter((l) => ac.lessons[l.id]).length;
+    return `<div class="card module"><h3>${m.icon} ${esc(m.title)}</h3><p class="muted small">${esc(m.intro)}</p>
+      <div class="bar"><div style="width:${(done / m.lessons.length) * 100}%"></div></div>
+      ${m.lessons.map((l) => {
+        const ok = !!ac.lessons[l.id];
+        const taskPending = !ok && l.task && !ac.checks[l.task.id];
+        return `<div class="lesson-link${ok ? ' done' : ''}" data-lesson="${l.id}"><span>${esc(l.title)}</span>
+          <span class="st">${ok ? '✅ Completada' : taskPending ? '🛠️ Tarea pendiente' : '○'}</span></div>`;
+      }).join('')}</div>`;
+  }).join('');
+}
+
+function openLesson(id) {
+  const l = Courses.LESSONS.find((x) => x.id === id);
+  const ac = state.ac;
+  const idx = Courses.LESSONS.indexOf(l);
+  const next = Courses.LESSONS[idx + 1];
+  const done = !!ac.lessons[id];
+  const taskOk = l.task && ac.checks[l.task.id];
+  $('#ac-modules').classList.add('hidden');
+  const el = $('#ac-lesson');
+  el.classList.remove('hidden');
+  el.innerHTML = `
+    <div class="chart-head"><button type="button" data-ac-back>← Volver a la Academia</button><span class="muted small">Lección ${idx + 1} de ${Courses.LESSONS.length}</span></div>
+    <h2 class="mt">${esc(l.title)} ${done ? '✅' : ''}</h2>
+    <div class="body">${l.body}</div>
+    ${l.action ? `<button type="button" data-goto="${l.action.view}">${esc(l.action.label)} →</button>` : ''}
+    ${l.task ? `<div class="task${taskOk ? ' ok' : ''}"><strong>🛠️ Tarea práctica</strong><p>${esc(l.task.text)}</p>
+      <p class="small">${taskOk ? '✅ ¡Hecha!' : '⏳ Todavía no se ha detectado.'} <button type="button" class="link" data-ac-recheck="${id}">Comprobar de nuevo</button></p></div>` : ''}
+    <form class="quiz" data-quiz="${id}"><h3>📝 Quiz</h3>
+      ${l.quiz.map((q, i) => `<div class="q">${i + 1}. ${esc(q.q)}</div>
+        ${q.options.map((o, k) => `<label class="opt"><input type="radio" name="q${i}" value="${k}" required> ${esc(o)}</label>`).join('')}
+        <div class="explain hidden" data-explain="${i}"></div>`).join('')}
+      <button type="submit" class="primary" style="width:auto;margin-top:12px">Enviar respuestas</button>
+    </form>
+    <div id="ac-result"></div>
+    ${next ? `<button type="button" data-lesson="${next.id}">Siguiente: ${esc(next.title)} →</button>` : ''}`;
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function closeLesson() {
+  $('#ac-lesson').classList.add('hidden');
+  $('#ac-modules').classList.remove('hidden');
+  renderAcademy();
+}
+
+$('#view-academy').addEventListener('click', async (e) => {
+  const t = e.target;
+  const lesson = t.closest('[data-lesson]');
+  if (lesson) return openLesson(lesson.dataset.lesson);
+  if (t.dataset.acBack !== undefined) return closeLesson();
+  if (t.dataset.goto) return showView(t.dataset.goto);
+  if (t.dataset.acRecheck) {
+    await loadAcademy();
+    openLesson(t.dataset.acRecheck);
+  }
+});
+
+$('#view-academy').addEventListener('submit', async (e) => {
+  const f = e.target.closest('[data-quiz]');
+  if (!f) return;
+  e.preventDefault();
+  const id = f.dataset.quiz;
+  const l = Courses.LESSONS.find((x) => x.id === id);
+  const answers = l.quiz.map((_, i) => Number(f.querySelector(`input[name=q${i}]:checked`)?.value));
+  try {
+    const r = await api(`/academy/lessons/${id}`, { method: 'POST', body: { answers } });
+    r.results.forEach((res, i) => {
+      f.querySelectorAll(`input[name=q${i}]`).forEach((inp) => {
+        const lab = inp.closest('label');
+        lab.classList.toggle('right', Number(inp.value) === res.answer);
+        lab.classList.toggle('wrong', inp.checked && !res.correct);
+      });
+      const ex = f.querySelector(`[data-explain="${i}"]`);
+      ex.textContent = (res.correct ? '✔ ' : '✘ ') + res.explain;
+      ex.classList.remove('hidden');
+    });
+    const score = `${Math.round(r.score * l.quiz.length)}/${l.quiz.length}`;
+    $('#ac-result').innerHTML = `<div class="result">${r.completed ? `🎉 <strong>¡Lección completada!</strong> Quiz ${score}. +100 XP`
+      : r.passed ? `✅ Quiz aprobado (${score}). Te falta la <strong>tarea práctica</strong>: hazla y vuelve a enviar el quiz.`
+      : `📚 ${score}: necesitas al menos ${Math.ceil(Courses.PASS * l.quiz.length)} aciertos. Repasa la lección y vuelve a intentarlo.`}</div>`;
+    const before = state.ac.badges.length;
+    state.ac = r.progress;
+    $('#academy-pct').textContent = `${Math.round((r.progress.completed / r.progress.total) * 100)}%`;
+    renderAcademy();
+    const newBadges = r.progress.badges.slice(before);
+    if (newBadges.length) toast('🏅 ¡Nueva insignia! ' + newBadges.map((b) => Courses.BADGES.find((x) => x.id === b)?.name).join(', '));
+  } catch (err) {
+    $('#ac-result').innerHTML = `<p class="error">${esc(err.message)}</p>`;
+  }
+});
+
 const fmtDuration = (m) => (m >= 1440 ? `${Math.floor(m / 1440)} d ${Math.floor((m % 1440) / 60)} h` : m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`);
 
 // ---------- Horarios de mercado ----------
@@ -1241,7 +1854,9 @@ async function enterApp() {
   $('#auth').classList.add('hidden');
   $('#app').classList.remove('hidden');
   await loadConfig();
-  await Promise.all([loadTickers(), loadMe(), loadStrategies()]);
+  await Promise.all([loadTickers(), loadMe(), loadStrategies(), loadJournalMeta(), loadAcademy()]);
+  $('#rp-form').symbol.innerHTML = state.config.symbols.map((x) => `<option>${esc(x)}</option>`).join('');
+  if (!$('#rp-form').start.value) $('#rp-form').start.value = '2022-11-05T00:00';
   selectSymbol(state.symbol);
   setSide(state.side);
   setBotType(state.botType);

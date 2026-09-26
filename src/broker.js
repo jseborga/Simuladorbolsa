@@ -85,6 +85,7 @@ class Broker {
       this.db.prepare('DELETE FROM trades WHERE user_id = ?').run(userId);
       this.db.prepare('DELETE FROM orders WHERE user_id = ?').run(userId);
       this.db.prepare('DELETE FROM bots WHERE user_id = ?').run(userId);
+      this.db.prepare('DELETE FROM journal WHERE user_id = ?').run(userId);
       this.db.prepare('UPDATE users SET cash = initial_cash WHERE id = ?').run(userId);
     });
   }
@@ -160,13 +161,15 @@ class Broker {
   //  - limit sell: se ejecuta cuando el precio sube a `price` o más (toma de ganancias).
   //  - stop sell : se ejecuta cuando el precio cae a `price` o menos (stop-loss).
   //  - stop buy  : se ejecuta cuando el precio sube a `price` o más (entrada por ruptura).
-  placeOrder(userId, symbol, side, type, qty, price) {
+  placeOrder(userId, symbol, side, type, qty, price, { oco = null, skipCheck = false } = {}) {
     qty = this.validate(symbol, side, qty);
     if (type !== 'limit' && type !== 'stop') throw new BrokerError('Tipo de orden inválido (limit/stop)');
     price = Number(price);
     if (!Number.isFinite(price) || price <= 0) throw new BrokerError('Precio inválido');
     if (qty * price < this.minNotional) throw new BrokerError(`El monto mínimo por operación es $${this.minNotional}`);
-    if (side === 'buy') {
+    if (skipCheck) {
+      // Órdenes de salida de una orden con stop y objetivo: se validaron al crearla.
+    } else if (side === 'buy') {
       const cost = qty * price * (1 + this.feeFor(symbol));
       const { cash } = this.db.prepare('SELECT cash FROM users WHERE id = ?').get(userId);
       if (cost > cash + EPS) throw new BrokerError(`Saldo insuficiente para esta orden (necesitas ~$${cost.toFixed(2)})`);
@@ -175,11 +178,29 @@ class Broker {
       if (!h || h.qty + EPS < qty) throw new BrokerError(`No tienes suficiente ${symbol.split('/')[0]}`);
     }
     const r = this.db
-      .prepare('INSERT INTO orders (user_id, symbol, side, type, qty, price) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(userId, symbol, side, type, qty, price);
+      .prepare('INSERT INTO orders (user_id, symbol, side, type, qty, price, oco) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(userId, symbol, side, type, qty, price, oco);
     const id = Number(r.lastInsertRowid);
-    this.processOrders();
+    if (!oco) this.processOrders();
     return this.db.prepare('SELECT * FROM orders WHERE id = ?').get(id);
+  }
+
+  // Compra a mercado con stop-loss y objetivo (take-profit) enlazados como OCO:
+  // cuando se ejecuta uno, el otro se cancela automáticamente.
+  bracketBuy(userId, symbol, qty, stop, target) {
+    qty = this.validate(symbol, 'buy', qty);
+    stop = Number(stop);
+    target = target === undefined || target === null || target === '' ? null : Number(target);
+    const price = this.quote(symbol, 'buy');
+    if (!(stop > 0 && stop < price)) throw new BrokerError('El stop-loss debe estar por debajo del precio actual');
+    if (target !== null && !(target > price)) throw new BrokerError('El objetivo debe estar por encima del precio actual');
+    const oco = crypto.randomBytes(6).toString('hex');
+    return tx(this.db, () => {
+      const trade = this.fill(userId, symbol, 'buy', qty, price, null);
+      const stopOrder = this.placeOrder(userId, symbol, 'sell', 'stop', qty, stop, { oco, skipCheck: true });
+      const targetOrder = target !== null ? this.placeOrder(userId, symbol, 'sell', 'limit', qty, target, { oco, skipCheck: true }) : null;
+      return { trade, stopOrder, targetOrder };
+    });
   }
 
   cancelOrder(userId, orderId) {
@@ -199,6 +220,8 @@ class Broker {
     const open = this.db.prepare("SELECT * FROM orders WHERE status = 'open' ORDER BY id").all();
     const filled = [];
     for (const o of open) {
+      // Puede haberse cancelado por OCO en esta misma pasada.
+      if (o.oco && this.db.prepare('SELECT status FROM orders WHERE id = ?').get(o.id).status !== 'open') continue;
       const t = this.market.tickers[o.symbol];
       if (!t?.last) continue;
       const bid = t.bid || t.last;
@@ -211,6 +234,11 @@ class Broker {
         tx(this.db, () => {
           this.fill(o.user_id, o.symbol, o.side, o.qty, price, o.id);
           this.db.prepare("UPDATE orders SET status = 'filled', closed_at = datetime('now') WHERE id = ?").run(o.id);
+          if (o.oco) {
+            this.db
+              .prepare("UPDATE orders SET status = 'cancelled', note = 'OCO: se ejecutó la orden enlazada', closed_at = datetime('now') WHERE oco = ? AND id != ? AND status = 'open'")
+              .run(o.oco, o.id);
+          }
         });
         filled.push(o.id);
       } catch (e) {

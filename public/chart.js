@@ -295,7 +295,7 @@
       }
       const long = ['4h', '1d'].includes(o.timeframe);
       const tstep = Math.max(1, Math.ceil(n / 6));
-      for (let k = 0; k < n; k += tstep) g.fillText(timeLabel(candles[k][0], long), k * cw + 2, MAIN_H - 6);
+      if (!o.hideTime) for (let k = 0; k < n; k += tstep) g.fillText(timeLabel(candles[k][0], long), k * cw + 2, MAIN_H - 6);
 
       // Leyenda
       let lx = 6;
@@ -384,7 +384,7 @@
         if (!this.tool) {
           const chg = ((c[4] - c[1]) / c[1]) * 100;
           const lines = [
-            new Date(c[0]).toLocaleString('es', { dateStyle: 'short', timeStyle: 'short' }),
+            o.hideTime ? 'Fecha oculta (modo a ciegas)' : new Date(c[0]).toLocaleString('es', { dateStyle: 'short', timeStyle: 'short' }),
             `A ${fmt(c[1])}  M ${fmt(c[2])}  m ${fmt(c[3])}  C ${fmt(c[4])}`,
             `Var ${chg >= 0 ? '+' : ''}${chg.toFixed(2)} %  Vol ${fmt(c[5])}`,
             ...(o.overlays || []).filter((ov) => !ov.hideLegend).map((ov) => `${ov.label}: ${fmt(ov.values[i])}`),

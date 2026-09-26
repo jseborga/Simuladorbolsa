@@ -6,6 +6,14 @@ Los precios y las velas se obtienen con [CCXT](https://github.com/ccxt/ccxt) (li
 
 ## Funciones
 
+### Para aprender
+- **🎓 Academia**: 6 módulos y 20 lecciones (fundamentos, gestión del riesgo, análisis técnico, forex y horarios, ICT / Smart Money, estrategias y bots). Cada lección tiene teoría, un **quiz corregido en el servidor** y, en muchas, una **tarea práctica** que se comprueba automáticamente con lo que haces en el simulador (por ejemplo: «abre una compra con stop y objetivo», «ten 3 activos a la vez», «completa una sesión de Replay»). Progreso, XP, niveles y 13 **insignias**.
+- **⏪ Modo Replay**: viaja a una fecha pasada y opera vela a vela (paso a paso o reproducción a 1–10 velas/s) con **histórico real** de Bitstamp, Bitfinex o Coinbase. Incluye accesos a fechas famosas (crash COVID 2020, máximo de BTC 2021, caída de FTX 2022), **fecha aleatoria** y **modo a ciegas** que oculta las fechas hasta el final. Stop y objetivo por operación, estadísticas frente a «comprar y mantener» y sesiones guardadas.
+- **📓 Diario de trading**: anota setup, emoción, motivo, valoración y lección de cada operación (también al abrirla desde el panel Operar). Estadísticas por setup, emoción, activo y kill zone, con **conclusiones automáticas** («tu mejor setup es…», «cuando operas con FOMO pierdes de media…»).
+- **🧮 Calculadora de riesgo**: eliges el % del patrimonio que arriesgas y el stop (sugerido a 1,5 ATR); calcula la cantidad, la pérdida máxima y la relación R:R, dibuja stop y objetivo en el gráfico y abre la compra con **stop-loss y objetivo enlazados (OCO)**: al ejecutarse uno se cancela el otro.
+
+### Para operar
+
 - **Cuentas de usuario**: registro/inicio de sesión (contraseñas con `scrypt`), cada usuario con su propia cartera.
 - **Mercado en vivo** (actualizado cada 5 s):
   - **Cripto**: BTC, ETH, SOL, XRP, ADA, DOGE, LTC, DOT, LINK, AVAX.
@@ -42,7 +50,6 @@ Los precios y las velas se obtienen con [CCXT](https://github.com/ccxt/ccxt) (li
 - **Cartera**: posiciones, precio medio, G/P realizada y no realizada, % de la cartera, comisiones pagadas.
 - **Historial** de operaciones y de órdenes.
 - **Ranking** entre todos los usuarios.
-- **Aprende**: guía con conceptos básicos y ejercicios propuestos.
 - **Reiniciar cuenta** para volver a empezar con otra estrategia.
 - **Estrategias incluidas**: cruce de SMA, cruce de EMA, RSI sobreventa/sobrecompra, cruce MACD, rebote en Bollinger, ruptura de canal Donchian e **ICT: estructura + Fair Value Gap** (con filtro opcional de kill zones).
 - **Modo simulado**: si ningún exchange responde (sin internet o bloqueo regional), la app sigue funcionando con precios simulados.
@@ -92,14 +99,16 @@ src/
   broker.js   Motor de paper trading: usuarios, órdenes, cartera, ranking
   strategies.js  Estrategias predefinidas (señales de compra/venta)
   custom.js   Constructor de estrategias: validación, plantillas y evaluación de reglas
+  academy.js  Academia: corrección de quizzes, tareas prácticas e insignias
   backtest.js Motor de backtesting
   bots.js     Bots de señales, DCA y grid sobre la cuenta virtual
   db.js       Esquema SQLite
 public/
   indicators.js  Indicadores técnicos, ICT y horarios de mercado (compartidos por navegador y servidor)
+  courses.js  Contenido de la Academia: módulos, lecciones, quizzes e insignias
   chart.js    Gráficos en canvas (velas, indicadores, zonas, dibujos, cruz de precio, curva de capital)
   app.js, index.html, styles.css  Interfaz web (sin dependencias)
-test/         Tests de órdenes, indicadores, ICT, horarios, constructor, backtesting y bots
+test/         Tests de órdenes (incl. OCO), indicadores, ICT, horarios, constructor, backtesting, bots y Academia
 ```
 
 ## API
@@ -109,7 +118,11 @@ test/         Tests de órdenes, indicadores, ICT, horarios, constructor, backte
 | POST | `/api/register` · `/api/login` | `{username, password}` → `{token}` |
 | GET  | `/api/config` · `/api/tickers` · `/api/ohlcv?symbol=&timeframe=` | Datos de mercado |
 | GET  | `/api/me` · `/api/trades` · `/api/orders` | Cartera del usuario (header `Authorization: Bearer <token>`) |
-| POST | `/api/orders` | `{symbol, side: buy\|sell, type: market\|limit\|stop, qty, price?}` |
+| POST | `/api/orders` | `{symbol, side: buy\|sell, type: market\|limit\|stop, qty, price?, stop?, target?, journal?}` (con `stop` abre una compra con stop y objetivo OCO) |
+| GET  | `/api/journal` · PUT `/api/journal/:tradeId` | Diario: operaciones con sus notas / anotar una operación |
+| GET  | `/api/history?symbol=&timeframe=&since=&limit=` | Histórico antiguo para el Replay |
+| GET/POST | `/api/replay-sessions` | Sesiones de Replay guardadas |
+| GET  | `/api/academy` · POST `/api/academy/lessons/:id` | Progreso de la Academia / enviar respuestas `{answers}` |
 | DELETE | `/api/orders/:id` | Cancelar orden abierta |
 | POST | `/api/reset` | Reiniciar la cuenta |
 | GET  | `/api/strategies` | Estrategias disponibles y sus parámetros |

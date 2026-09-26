@@ -39,8 +39,10 @@
         <button class="nav" data-view="backtest">Backtesting</button>
         <button class="nav" data-view="builder">Estrategias</button>
         <button class="nav" data-view="bots">Bots</button>
+        <button class="nav" data-view="replay">Replay</button>
+        <button class="nav" data-view="journal">Diario</button>
         <button class="nav" data-view="ranking">Ranking</button>
-        <button class="nav" data-view="learn">Aprende</button>
+        <button class="nav" data-view="academy">🎓 Academia <span id="academy-pct" class="muted small"></span></button>
       </nav>
       <div class="user">
         <span id="source-badge" class="badge"></span>
@@ -154,6 +156,31 @@
                 <button type="button" data-pct="25">25%</button><button type="button" data-pct="50">50%</button>
                 <button type="button" data-pct="75">75%</button><button type="button" data-pct="100">Máx</button>
               </div>
+              <details class="calc" id="risk-calc">
+                <summary>🧮 Calculadora de riesgo</summary>
+                <p class="hint">Decide cuánto quieres perder como máximo si el precio toca tu stop; la calculadora te dice cuánto comprar.</p>
+                <div class="row2">
+                  <label>Riesgo (% de tu patrimonio) <input name="riskPct" type="number" step="0.1" min="0.1" max="100" value="1"></label>
+                  <label>Stop-loss (precio) <input name="stop" type="number" step="any" min="0"></label>
+                </div>
+                <div class="row2">
+                  <label>Objetivo (precio) <input name="target" type="number" step="any" min="0"></label>
+                  <label>o relación R:R
+                    <select name="rr"><option value="">—</option><option value="1">1:1</option><option value="2" selected>1:2</option><option value="3">1:3</option></select>
+                  </label>
+                </div>
+                <dl class="preview" id="calc-out"></dl>
+                <button type="button" id="calc-apply">Usar esta cantidad</button>
+                <label class="chk"><input type="checkbox" name="bracket" checked> Colocar stop y objetivo automáticamente (OCO)</label>
+              </details>
+              <details class="calc" id="entry-journal">
+                <summary>📓 Nota para el diario (opcional)</summary>
+                <div class="row2">
+                  <label>Setup <select name="jSetup"><option value="">—</option></select></label>
+                  <label>¿Cómo te sientes? <select name="jEmotion"><option value="">—</option></select></label>
+                </div>
+                <label>¿Por qué entras? <textarea name="jNotes" rows="2" maxlength="2000" placeholder="p. ej. rebote en soporte con RSI en sobreventa"></textarea></label>
+              </details>
               <dl class="preview">
                 <dt class="pip-row hidden">Valor de 1 pip</dt><dd class="pip-row hidden" id="p-pip">—</dd>
                 <dt>Disponible</dt><dd id="p-avail">—</dd>
@@ -384,6 +411,108 @@
         </div>
       </section>
 
+      <!-- Replay -->
+      <section class="view hidden" id="view-replay">
+        <div class="replay-grid">
+          <div class="col">
+            <div class="card" id="rp-setup">
+              <h2>⏪ Modo Replay</h2>
+              <p class="muted small">Viaja a una fecha del pasado y opera vela a vela sin saber qué viene después. Se usa histórico real (Bitstamp, Bitfinex o Coinbase) cuando existe.</p>
+              <form id="rp-form">
+                <label>Par <select name="symbol"></select></label>
+                <div class="row2">
+                  <label>Temporalidad
+                    <select name="timeframe"><option>5m</option><option>15m</option><option selected>1h</option><option>4h</option><option>1d</option></select>
+                  </label>
+                  <label>Velas a jugar <input name="count" type="number" min="50" max="1500" value="400"></label>
+                </div>
+                <label>Fecha de inicio <input name="start" type="datetime-local"></label>
+                <div class="quick">
+                  <button type="button" data-rp-date="2020-03-09T00:00">Crash COVID 2020</button>
+                  <button type="button" data-rp-date="2021-11-01T00:00">Máximo BTC 2021</button>
+                  <button type="button" data-rp-date="2022-11-05T00:00">Caída FTX 2022</button>
+                  <button type="button" id="rp-random">🎲 Aleatoria</button>
+                </div>
+                <label class="chk"><input type="checkbox" name="blind"> Modo a ciegas: ocultar fechas hasta el final</label>
+                <button type="submit" class="primary">▶ Empezar sesión</button>
+                <p class="error" id="rp-error"></p>
+              </form>
+            </div>
+            <div class="card hidden" id="rp-trade">
+              <h2>Operar en el replay</h2>
+              <dl class="preview" id="rp-account"></dl>
+              <label>Monto en USD <input id="rp-usd" type="number" step="any" min="1" value="1000"></label>
+              <div class="quick">
+                <button type="button" data-rp-pct="25">25%</button><button type="button" data-rp-pct="50">50%</button><button type="button" data-rp-pct="100">Máx</button>
+              </div>
+              <div class="row2">
+                <label>Stop-loss (precio) <input id="rp-sl" type="number" step="any" min="0"></label>
+                <label>Objetivo (precio) <input id="rp-tp" type="number" step="any" min="0"></label>
+              </div>
+              <div class="row2">
+                <button type="button" class="primary buy" id="rp-buy">Comprar</button>
+                <button type="button" class="primary sell" id="rp-sell">Cerrar posición</button>
+              </div>
+              <p class="error" id="rp-trade-error"></p>
+              <p class="hint">Las órdenes se ejecutan al cierre de la vela actual. El stop y el objetivo se revisan en las velas siguientes. Puedes modificarlos con la posición abierta.</p>
+            </div>
+            <div class="card">
+              <h2>Mis sesiones</h2>
+              <div id="rp-sessions"></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="chart-head">
+              <h2 id="rp-title">Elige un par y una fecha para empezar</h2>
+              <div class="rp-controls">
+                <button type="button" id="rp-play" disabled>▶</button>
+                <button type="button" id="rp-step" disabled title="Avanzar una vela (tecla →)">⏭ +1</button>
+                <button type="button" id="rp-step10" disabled>+10</button>
+                <select id="rp-speed"><option value="1">1 vela/s</option><option value="2" selected>2 velas/s</option><option value="5">5 velas/s</option><option value="10">10 velas/s</option></select>
+                <button type="button" id="rp-end" class="danger" disabled>Terminar</button>
+              </div>
+            </div>
+            <div class="price-line"><span id="rp-price">—</span> <span id="rp-date" class="muted small"></span> <span id="rp-source" class="badge"></span></div>
+            <div class="rp-progress"><div id="rp-bar"></div></div>
+            <p class="hint">Los indicadores activos son los mismos que elijas en el menú del gráfico de Mercado.</p>
+            <canvas id="rp-chart"></canvas>
+            <div id="rp-summary" class="hidden">
+              <h2 class="mt">Resultado de la sesión</h2>
+              <div class="metrics" id="rp-metrics"></div>
+              <p class="muted small" id="rp-verdict"></p>
+            </div>
+            <h2 class="mt">Operaciones de la sesión</h2>
+            <table class="list" id="rp-trades">
+              <thead><tr><th>#</th><th>Entrada</th><th>Salida</th><th class="r">Precio entrada</th><th class="r">Precio salida</th><th>Motivo</th><th class="r">G/P</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Diario -->
+      <section class="view hidden" id="view-journal">
+        <div class="card">
+          <h2>📓 Diario de trading</h2>
+          <p class="muted small">Anota por qué entras en cada operación, cómo te sentías y qué aprendiste. Las estadísticas te muestran qué setups y qué estados de ánimo te hacen ganar o perder. Las ventas heredan el setup y la emoción de tu última compra anotada del mismo activo.</p>
+          <div class="metrics" id="j-metrics"></div>
+          <div id="j-insights" class="insights"></div>
+        </div>
+        <div class="j-grid">
+          <div class="card"><h2>Por setup</h2><table class="list" id="j-by-setup"></table></div>
+          <div class="card"><h2>Por emoción</h2><table class="list" id="j-by-emotion"></table></div>
+          <div class="card"><h2>Por activo</h2><table class="list" id="j-by-symbol"></table></div>
+          <div class="card"><h2>Por horario (Nueva York)</h2><table class="list" id="j-by-time"></table></div>
+        </div>
+        <div class="card">
+          <div class="chart-head">
+            <h2>Operaciones</h2>
+            <label class="chk"><input type="checkbox" id="j-only-empty"> Sólo las que no tienen nota</label>
+          </div>
+          <div id="j-list"></div>
+        </div>
+      </section>
+
       <!-- Ranking -->
       <section class="view hidden" id="view-ranking">
         <div class="card">
@@ -397,102 +526,28 @@
       </section>
 
       <!-- Aprende -->
-      <section class="view hidden" id="view-learn">
-        <div class="card learn">
-          <h2>Guía rápida para aprender</h2>
-          <details open><summary>¿Qué es este simulador?</summary>
-            <p>Es un entorno de <em>paper trading</em>: usas precios reales de un exchange (obtenidos con la librería de código abierto <a href="https://github.com/ccxt/ccxt" target="_blank" rel="noopener">CCXT</a>) pero con dinero ficticio. Todas las ganancias y pérdidas son virtuales.</p></details>
-          <details><summary>Orden a mercado</summary>
-            <p>Se ejecuta al instante al mejor precio disponible: compras al precio <strong>ask</strong> (lo que piden los vendedores) y vendes al <strong>bid</strong> (lo que ofrecen los compradores). La diferencia entre ambos es el <em>spread</em>, un coste oculto de operar.</p></details>
-          <details><summary>Orden límite</summary>
-            <p>Fijas el precio. Una compra límite sólo se ejecuta si el precio baja hasta tu nivel; una venta límite sólo si sube hasta él. Útil para «comprar barato» o para tomar ganancias.</p></details>
-          <details><summary>Orden stop (stop-loss)</summary>
-            <p>Una venta stop se activa si el precio <strong>cae</strong> hasta tu nivel y vende a mercado. Sirve para limitar pérdidas: por ejemplo, comprar BTC a 60 000 y poner un stop en 57 000 limita la pérdida a ~5 %.</p></details>
-          <details><summary>Comisiones</summary>
-            <p>Cada operación paga una comisión (<span id="fee-text"></span>). Operar muchas veces con importes pequeños hace que las comisiones se coman tus ganancias.</p></details>
-          <details><summary>Ganancia realizada vs. no realizada</summary>
-            <p><strong>No realizada</strong>: lo que ganarías o perderías si vendieras ahora. <strong>Realizada</strong>: el resultado ya cerrado de tus ventas (incluye comisiones).</p></details>
-          <details><summary>Diversificación y gestión del riesgo</summary>
-            <ul>
-              <li>No pongas todo tu capital en un solo activo; mira la columna «% cartera».</li>
-              <li>Define antes de entrar cuánto estás dispuesto a perder y coloca un stop.</li>
-              <li>Arriesgar un 1–2 % del patrimonio por operación es una regla clásica.</li>
-              <li>Las criptomonedas son muy volátiles: movimientos del 10 % en un día son normales.</li>
-            </ul></details>
-          <details><summary>Indicadores técnicos</summary>
-            <ul>
-              <li><strong>SMA (media móvil simple)</strong>: promedio de los últimos N cierres. Suaviza el precio y muestra la tendencia. SMA 50 y SMA 200 son las más vigiladas.</li>
-              <li><strong>EMA (media exponencial)</strong>: como la SMA pero da más peso a los precios recientes, así que reacciona antes.</li>
-              <li><strong>Bandas de Bollinger</strong>: media de 20 velas ± 2 desviaciones típicas. Bandas anchas = mucha volatilidad; el precio fuera de las bandas es un movimiento extremo.</li>
-              <li><strong>RSI</strong>: oscilador de 0 a 100 que mide la fuerza de las subidas frente a las bajadas. Por encima de 70 se considera «sobrecompra» y por debajo de 30 «sobreventa».</li>
-              <li><strong>MACD</strong>: diferencia entre EMA 12 y EMA 26, con una línea de señal (EMA 9). Cuando el MACD cruza su señal hacia arriba indica impulso alcista.</li>
-              <li><strong>Volumen</strong>: cuánto se negoció. Un movimiento con mucho volumen suele ser más fiable.</li>
-              <li><strong>Soportes y resistencias</strong>: usa la herramienta «Línea horizontal» para marcar precios donde el mercado rebotó antes.</li>
-            </ul></details>
-          <details><summary>Forex: pips, lotes y oro</summary>
-            <ul>
-              <li>En forex se opera una divisa contra otra. En <strong>EUR/USD</strong> compras euros pagando dólares: si sube, el euro se revaloriza.</li>
-              <li><strong>Pip</strong>: la cuarta cifra decimal (0,0001). Si EUR/USD pasa de 1,1000 a 1,1025 se movió 25 pips. El simulador te muestra cuánto vale 1 pip según tu cantidad.</li>
-              <li><strong>Lotes</strong>: 1 lote estándar = 100 000 unidades (1 pip ≈ 10 USD), 1 mini lote = 10 000 (≈ 1 USD), 1 micro lote = 1 000 (≈ 0,10 USD).</li>
-              <li><strong>PAXG/USD</strong> es un token respaldado por una onza de oro físico: sigue el precio del oro (XAU/USD).</li>
-              <li>El forex abre de domingo 17:00 a viernes 17:00 (hora de Nueva York). La mayor liquidez está en el solape Londres–Nueva York.</li>
-              <li>Los precios de forex y oro vienen de Kraken a través de CCXT. Sólo se pueden operar pares cotizados en USD porque tu saldo está en USD.</li>
-            </ul></details>
-          <details><summary>ICT / Smart Money Concepts</summary>
-            <p>Conceptos popularizados por Michael J. Huddleston (<em>Inner Circle Trader</em>). Buscan entender dónde están las órdenes de los grandes participantes.</p>
-            <ul>
-              <li><strong>Fair Value Gap (FVG) o imbalance</strong>: hueco entre la mecha de la vela 1 y la de la vela 3 de un movimiento fuerte. El precio suele volver a «rellenarlo». Verde = alcista, rojo = bajista; se dibuja hasta que se rellena.</li>
-              <li><strong>Order Block (OB)</strong>: última vela contraria antes del impulso que rompió la estructura. Zona donde se esperan órdenes institucionales. Se borra al cerrar el precio al otro lado.</li>
-              <li><strong>BOS</strong> (<em>Break of Structure</em>): el precio rompe un máximo/mínimo a favor de la tendencia. <strong>CHoCH</strong> (<em>Change of Character</em>): la primera ruptura en contra, posible cambio de tendencia.</li>
-              <li><strong>Liquidez</strong>: por encima de máximos iguales (EQH, <em>buy-side liquidity</em>) y por debajo de mínimos iguales (EQL, <em>sell-side liquidity</em>) se acumulan stops. Una <strong>barrida</strong> es cuando la mecha los toma y el precio vuelve: señal de posible giro.</li>
-              <li><strong>Premium / Discount</strong>: por encima del 50 % del rango el precio está «caro» (buscar ventas); por debajo, «barato» (buscar compras).</li>
-              <li><strong>OTE</strong> (<em>Optimal Trade Entry</em>): retroceso del 62 %–79 % de un impulso. Usa la herramienta Fibonacci: la zona OTE sale sombreada en naranja y los niveles −0,27 y −0,62 son objetivos.</li>
-              <li><strong>PDH / PDL</strong>: máximo y mínimo del día anterior; <strong>PWH / PWL</strong>: de la semana anterior. Son imanes de liquidez. La <strong>apertura de medianoche de NY</strong> se usa como referencia del día.</li>
-            </ul></details>
-          <details><summary>Sesiones y kill zones</summary>
-            <ul>
-              <li><strong>Sesiones de forex</strong> (hora local): Tokio 9:00–18:00, Londres 8:00–17:00, Nueva York 8:00–17:00. En el gráfico se ven como cajas con el máximo y mínimo de cada sesión.</li>
-              <li><strong>Kill zones de ICT</strong> (hora de Nueva York): Asia 20:00–00:00, Londres 2:00–5:00, Nueva York 7:00–10:00 y cierre de Londres 10:00–12:00. Son las franjas con más volatilidad y donde suelen formarse los movimientos del día.</li>
-              <li>Una idea típica: marcar el rango de Asia y esperar a que Londres o Nueva York barran uno de sus extremos antes de buscar la entrada.</li>
-              <li>El panel «Horarios de mercado» muestra en tiempo real qué bolsas están abiertas y cuánto falta para la apertura o el cierre.</li>
-            </ul></details>
-          <details><summary>Backtesting: probar antes de arriesgar</summary>
-            <p>Un backtest aplica las reglas de una estrategia a datos pasados. En este simulador la señal se calcula al cierre de una vela y se ejecuta en la apertura de la siguiente, con comisiones, para no «hacer trampa» mirando al futuro.</p>
-            <ul>
-              <li>Compara siempre con <strong>Comprar y mantener</strong>: si tu estrategia no lo supera, ¿vale la pena?</li>
-              <li><strong>Máxima caída (drawdown)</strong>: la peor pérdida desde un máximo. ¿Podrías soportarla sin nervios?</li>
-              <li><strong>Factor de beneficio</strong>: ganancias totales ÷ pérdidas totales. Mayor que 1 es rentable.</li>
-              <li>Cuidado con el <em>sobreajuste</em>: si ajustas los parámetros hasta que el pasado sale perfecto, probablemente falle en el futuro. Prueba la misma configuración en otros pares y periodos.</li>
-            </ul></details>
-          <details><summary>Bots de trading y constructor de estrategias</summary>
-            <p>Un bot sigue las reglas sin emociones, las 24 horas. Los bots sólo funcionan mientras el servidor está encendido. Hay tres tipos, como en plataformas como 3Commas, Pionex o Binance:</p>
-            <ul>
-              <li><strong>🧠 Bot de señales</strong>: ejecuta una estrategia (predefinida o tuya) al cierre de cada vela. Admite stop-loss, take-profit y <strong>trailing stop</strong> (vende si el precio cae un % desde el máximo alcanzado: deja correr las ganancias y protege lo ganado).</li>
-              <li><strong>📅 Bot DCA</strong> (<em>Dollar Cost Averaging</em>): compra una cantidad fija cada X horas, sin importar el precio. Opcionalmente compra extra cuando el precio cae y vende todo al alcanzar un % de ganancia sobre el precio medio. Reduce el riesgo de «entrar en mal momento».</li>
-              <li><strong>🔲 Bot grid</strong>: reparte la inversión en niveles dentro de un rango. Compra cada vez que el precio baja un nivel y vende cuando sube al siguiente. Gana en mercados laterales; si el precio sale del rango por abajo, acumula pérdidas (usa el stop-loss).</li>
-            </ul>
-            <p>En <strong>Estrategias</strong> puedes crear las tuyas combinando reglas del tipo «RSI 14 es menor que 30» o «precio cruza por encima de EMA 50», y condiciones ICT como «el precio toca un FVG alcista» o «kill zone de Londres». Pruébalas en el backtest, compártelas con la comunidad y conviértelas en bots. Todos los bots se pueden <strong>editar</strong> en marcha y tienen un <strong>registro</strong> de lo que hicieron.</p></details>
-          <details><summary>Ejercicios sugeridos</summary>
-            <ol>
-              <li>Compra 1 000 USD de BTC a mercado y observa cómo cambia tu G/P no realizada.</li>
-              <li>Coloca una compra límite de ETH un 2 % por debajo del precio actual y espera a que se ejecute.</li>
-              <li>Protege una posición con una venta stop un 5 % por debajo de tu precio medio.</li>
-              <li>Crea una cartera diversificada con 4 activos y compárala en el ranking con tus compañeros.</li>
-              <li>Haz un backtest del cruce SMA 10/30 en BTC 1h. Luego prueba 20/50. ¿Cuál tiene menor drawdown?</li>
-              <li>Añade un stop-loss del 3 % al backtest del RSI. ¿Mejora o empeora el resultado?</li>
-              <li>Activa un bot con 500 USD y revisa en unos días si se comportó como en el backtest.</li>
-              <li>En EUR/USD 15m activa FVG, estructura y kill zones. ¿Cuántos FVG se rellenan dentro de la kill zone de Londres?</li>
-              <li>Traza un Fibonacci sobre el último impulso y observa si el precio reacciona en la zona OTE.</li>
-              <li>Haz un backtest de la estrategia ICT con y sin el filtro de kill zones y compara los resultados.</li>
-            </ol></details>
-          <p class="muted small">⚠️ Esto es una herramienta educativa. Los resultados simulados no garantizan resultados reales y nada de lo que ves aquí es asesoramiento financiero.</p>
+      <section class="view hidden" id="view-academy">
+        <div class="card">
+          <div class="chart-head">
+            <h2>🎓 Academia de trading</h2>
+            <span id="ac-xp" class="badge live"></span>
+          </div>
+          <p class="muted small">Aprende paso a paso: cada lección tiene teoría, un quiz y, muchas veces, una tarea práctica en el simulador que se comprueba automáticamente. Para completarla necesitas aprobar el quiz (2 de 3) y hacer la tarea.</p>
+          <div class="ac-progress"><div id="ac-bar"></div></div>
+          <p class="small" id="ac-summary"></p>
+          <h3>Insignias</h3>
+          <div id="ac-badges" class="badges"></div>
         </div>
+        <div id="ac-modules" class="ac-modules"></div>
+        <div class="card hidden" id="ac-lesson"></div>
+        <p class="muted small">⚠️ Esto es una herramienta educativa. Los resultados simulados no garantizan resultados reales y nada de lo que ves aquí es asesoramiento financiero.</p>
       </section>
     </main>
   </div>
 
   <div id="toast" class="toast hidden"></div>
   <script src="indicators.js"></script>
+  <script src="courses.js"></script>
   <script src="chart.js"></script>
   <script src="app.js"></script>
 </body>
