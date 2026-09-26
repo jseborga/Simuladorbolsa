@@ -30,20 +30,9 @@
   <!-- Aplicación -->
   <div id="app" class="hidden">
     <header class="topbar">
-      <div class="brand">📈 Simulador</div>
-      <nav>
-        <button class="nav active" data-view="market">Mercado</button>
-        <button class="nav" data-view="portfolio">Mi cartera</button>
-        <button class="nav" data-view="orders">Órdenes</button>
-        <button class="nav" data-view="history">Historial</button>
-        <button class="nav" data-view="backtest">Backtesting</button>
-        <button class="nav" data-view="builder">Estrategias</button>
-        <button class="nav" data-view="bots">Bots</button>
-        <button class="nav" data-view="replay">Replay</button>
-        <button class="nav" data-view="journal">Diario</button>
-        <button class="nav" data-view="ranking">Ranking</button>
-        <button class="nav" data-view="academy">🎓 Academia <span id="academy-pct" class="muted small"></span></button>
-      </nav>
+      <button type="button" id="nav-toggle" class="icon-btn" title="Mostrar u ocultar el menú" aria-label="Menú">☰</button>
+      <div class="brand">📈 <span>Simulador</span></div>
+      <div class="view-title" id="view-title">Mercado</div>
       <div class="user">
         <span id="source-badge" class="badge"></span>
         <span id="username"></span>
@@ -51,6 +40,32 @@
       </div>
     </header>
 
+    <div class="shell">
+      <aside class="sidebar" id="sidebar">
+        <nav aria-label="Secciones">
+          <div class="nav-group"><span>Operar</span></div>
+          <button class="nav active" data-view="market" title="Mercado"><span class="ic">📊</span><span class="lbl">Mercado</span></button>
+          <button class="nav" data-view="portfolio" title="Mi cartera"><span class="ic">💼</span><span class="lbl">Mi cartera</span></button>
+          <button class="nav" data-view="orders" title="Órdenes"><span class="ic">🧾</span><span class="lbl">Órdenes</span></button>
+          <button class="nav" data-view="history" title="Historial"><span class="ic">🕘</span><span class="lbl">Historial</span></button>
+
+          <div class="nav-group"><span>Aprender</span></div>
+          <button class="nav" data-view="academy" title="Academia"><span class="ic">🎓</span><span class="lbl">Academia</span><span id="academy-pct" class="nav-pill"></span></button>
+          <button class="nav" data-view="replay" title="Replay"><span class="ic">⏪</span><span class="lbl">Replay</span></button>
+          <button class="nav" data-view="journal" title="Diario"><span class="ic">📓</span><span class="lbl">Diario</span></button>
+
+          <div class="nav-group"><span>Automatizar</span></div>
+          <button class="nav" data-view="backtest" title="Backtesting"><span class="ic">🧪</span><span class="lbl">Backtesting</span></button>
+          <button class="nav" data-view="builder" title="Estrategias"><span class="ic">🧩</span><span class="lbl">Estrategias</span></button>
+          <button class="nav" data-view="bots" title="Bots"><span class="ic">🤖</span><span class="lbl">Bots</span></button>
+
+          <div class="nav-group"><span>Comunidad</span></div>
+          <button class="nav" data-view="ranking" title="Ranking"><span class="ic">🏆</span><span class="lbl">Ranking</span></button>
+        </nav>
+        <p class="sidebar-foot">💡 Dinero virtual: aprende sin arriesgar</p>
+      </aside>
+
+      <div class="content">
     <section class="summary">
       <div class="stat"><span>Patrimonio</span><strong id="s-equity">—</strong></div>
       <div class="stat"><span>Efectivo</span><strong id="s-cash">—</strong></div>
@@ -543,6 +558,18 @@
         <p class="muted small">⚠️ Esto es una herramienta educativa. Los resultados simulados no garantizan resultados reales y nada de lo que ves aquí es asesoramiento financiero.</p>
       </section>
     </main>
+      </div>
+    </div>
+
+    <!-- Móvil: accesos principales abajo y el resto en el menú lateral -->
+    <nav class="bottombar" aria-label="Accesos rápidos">
+      <button class="bnav active" data-view="market"><span class="ic">📊</span>Mercado</button>
+      <button class="bnav" data-view="portfolio"><span class="ic">💼</span>Cartera</button>
+      <button class="bnav" data-view="academy"><span class="ic">🎓</span>Academia</button>
+      <button class="bnav" data-view="replay"><span class="ic">⏪</span>Replay</button>
+      <button class="bnav" id="bnav-more"><span class="ic">☰</span>Más</button>
+    </nav>
+    <div class="scrim" id="scrim"></div>
   </div>
 
   <div id="toast" class="toast hidden"></div>

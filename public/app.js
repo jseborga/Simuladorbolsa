@@ -94,11 +94,43 @@ $('#logout').addEventListener('click', async () => {
 });
 
 // ---------- Navegación ----------
-$$('.nav').forEach((b) => b.addEventListener('click', () => showView(b.dataset.view)));
+const isMobile = () => window.matchMedia('(max-width: 900px)').matches;
+
+// Menú lateral: en escritorio se pliega a iconos (se recuerda la preferencia);
+// en móvil se abre como cajón. Sin preferencia, se pliega solo en pantallas medianas.
+function applyNavPref() {
+  let pref = null;
+  try { pref = localStorage.getItem('navCollapsed'); } catch { /* sin almacenamiento */ }
+  document.body.classList.toggle('nav-collapsed', pref === null ? window.innerWidth < 1280 : pref === '1');
+}
+applyNavPref();
+
+function setDrawer(open) {
+  document.body.classList.toggle('nav-open', open);
+}
+
+$('#nav-toggle').addEventListener('click', () => {
+  if (isMobile()) return setDrawer(!document.body.classList.contains('nav-open'));
+  const collapsed = document.body.classList.toggle('nav-collapsed');
+  try { localStorage.setItem('navCollapsed', collapsed ? '1' : '0'); } catch { /* sin almacenamiento */ }
+  // Los gráficos se adaptan al nuevo ancho cuando termina la animación.
+  setTimeout(() => window.dispatchEvent(new Event('resize')), 200);
+});
+$('#bnav-more').addEventListener('click', () => setDrawer(true));
+$('#scrim').addEventListener('click', () => setDrawer(false));
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setDrawer(false); });
+
+$$('.nav, .bnav[data-view]').forEach((b) => b.addEventListener('click', () => showView(b.dataset.view)));
 
 function showView(v) {
   state.view = v;
-  $$('.nav').forEach((x) => x.classList.toggle('active', x.dataset.view === v));
+  $$('.nav, .bnav[data-view]').forEach((x) => x.classList.toggle('active', x.dataset.view === v));
+  const navBtn = document.querySelector(`.nav[data-view="${v}"]`);
+  $('#view-title').textContent = navBtn?.querySelector('.lbl')?.textContent || '';
+  setDrawer(false);
+  // En móvil, "Más" queda marcado cuando la sección no está en la barra inferior.
+  $('#bnav-more').classList.toggle('active', !document.querySelector(`.bnav[data-view="${v}"]`));
+  window.scrollTo({ top: 0 });
   $$('.view').forEach((x) => x.classList.toggle('hidden', x.id !== 'view-' + v));
   if (v === 'orders') loadOrders();
   if (v === 'history') loadTrades();
@@ -1718,7 +1750,7 @@ async function loadReplaySessions() {
 async function loadAcademy() {
   state.ac = await api('/academy');
   const pctDone = Math.round((state.ac.completed / state.ac.total) * 100);
-  $('#academy-pct').textContent = `${pctDone}%`;
+  $('#academy-pct').textContent = pctDone ? `${pctDone} %` : '';
   if (state.view === 'academy') renderAcademy();
 }
 
@@ -1816,7 +1848,7 @@ $('#view-academy').addEventListener('submit', async (e) => {
       : `📚 ${score}: necesitas al menos ${Math.ceil(Courses.PASS * l.quiz.length)} aciertos. Repasa la lección y vuelve a intentarlo.`}</div>`;
     const before = state.ac.badges.length;
     state.ac = r.progress;
-    $('#academy-pct').textContent = `${Math.round((r.progress.completed / r.progress.total) * 100)}%`;
+    $('#academy-pct').textContent = `${Math.round((r.progress.completed / r.progress.total) * 100)} %`;
     renderAcademy();
     const newBadges = r.progress.badges.slice(before);
     if (newBadges.length) toast('🏅 ¡Nueva insignia! ' + newBadges.map((b) => Courses.BADGES.find((x) => x.id === b)?.name).join(', '));
