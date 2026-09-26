@@ -1,0 +1,29 @@
+{
+  "name": "simulador-bolsa",
+  "version": "1.0.0",
+  "description": "Simulador de trading (paper trading) multiusuario con precios reales vía CCXT",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node --no-warnings src/server.js",
+    "dev": "node --no-warnings --watch src/server.js",
+    "test": "node --no-warnings --test test/*.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jseborga/Simuladorbolsa.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/jseborga/Simuladorbolsa/issues"
+  },
+  "homepage": "https://github.com/jseborga/Simuladorbolsa#readme",
+  "dependencies": {
+    "ccxt": "^4.5.84",
+    "express": "^5.2.1"
+  },
+  "engines": {
+    "node": ">=22.13"
+  }
+}

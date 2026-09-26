@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Simulador de Trading</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📈</text></svg>">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Pantalla de acceso -->
+  <section id="auth" class="auth hidden">
+    <div class="auth-card">
+      <h1>📈 Simulador de Trading</h1>
+      <p class="muted">Aprende a invertir con precios reales del mercado y <strong>dinero virtual</strong>. Sin riesgo: aquí no puedes perder dinero de verdad.</p>
+      <div class="tabs">
+        <button class="tab active" data-auth="login">Entrar</button>
+        <button class="tab" data-auth="register">Crear cuenta</button>
+      </div>
+      <form id="auth-form">
+        <label>Usuario <input name="username" autocomplete="username" required minlength="3" maxlength="24"></label>
+        <label>Contraseña <input name="password" type="password" autocomplete="current-password" required minlength="6"></label>
+        <button type="submit" class="primary" id="auth-submit">Entrar</button>
+        <p class="error" id="auth-error"></p>
+      </form>
+      <p class="muted small" id="auth-bonus"></p>
+    </div>
+  </section>
+
+  <!-- Aplicación -->
+  <div id="app" class="hidden">
+    <header class="topbar">
+      <div class="brand">📈 Simulador</div>
+      <nav>
+        <button class="nav active" data-view="market">Mercado</button>
+        <button class="nav" data-view="portfolio">Mi cartera</button>
+        <button class="nav" data-view="orders">Órdenes</button>
+        <button class="nav" data-view="history">Historial</button>
+        <button class="nav" data-view="ranking">Ranking</button>
+        <button class="nav" data-view="learn">Aprende</button>
+      </nav>
+      <div class="user">
+        <span id="source-badge" class="badge"></span>
+        <span id="username"></span>
+        <button id="logout" class="ghost">Salir</button>
+      </div>
+    </header>
+
+    <section class="summary">
+      <div class="stat"><span>Patrimonio</span><strong id="s-equity">—</strong></div>
+      <div class="stat"><span>Efectivo</span><strong id="s-cash">—</strong></div>
+      <div class="stat"><span>Invertido (valor)</span><strong id="s-value">—</strong></div>
+      <div class="stat"><span>G/P no realizada</span><strong id="s-unreal">—</strong></div>
+      <div class="stat"><span>Rentabilidad total</span><strong id="s-return">—</strong></div>
+    </section>
+
+    <main>
+      <!-- Mercado -->
+      <section class="view" id="view-market">
+        <div class="market-grid">
+          <div class="card">
+            <h2>Activos</h2>
+            <table class="list" id="ticker-table">
+              <thead><tr><th>Par</th><th class="r">Precio</th><th class="r">24h</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="card">
+            <div class="chart-head">
+              <h2 id="chart-title">—</h2>
+              <div class="timeframes">
+                <button data-tf="5m">5m</button><button data-tf="15m">15m</button>
+                <button data-tf="1h" class="active">1h</button><button data-tf="4h">4h</button><button data-tf="1d">1d</button>
+              </div>
+            </div>
+            <div class="price-line"><span id="chart-price">—</span> <span id="chart-change"></span></div>
+            <canvas id="chart" height="320"></canvas>
+          </div>
+          <div class="card">
+            <h2>Operar</h2>
+            <div class="tabs side-tabs">
+              <button class="tab buy active" data-side="buy">Comprar</button>
+              <button class="tab sell" data-side="sell">Vender</button>
+            </div>
+            <form id="trade-form">
+              <label>Tipo de orden
+                <select name="type">
+                  <option value="market">A mercado (inmediata)</option>
+                  <option value="limit">Límite</option>
+                  <option value="stop">Stop</option>
+                </select>
+              </label>
+              <p class="hint" id="type-hint"></p>
+              <label id="price-field" class="hidden">Precio objetivo (USD) <input name="price" type="number" step="any" min="0"></label>
+              <label>Monto en USD <input name="usd" type="number" step="any" min="0" placeholder="p. ej. 500"></label>
+              <label>Cantidad <span id="base-asset"></span> <input name="qty" type="number" step="any" min="0"></label>
+              <div class="quick">
+                <button type="button" data-pct="25">25%</button><button type="button" data-pct="50">50%</button>
+                <button type="button" data-pct="75">75%</button><button type="button" data-pct="100">Máx</button>
+              </div>
+              <dl class="preview">
+                <dt>Disponible</dt><dd id="p-avail">—</dd>
+                <dt>Precio estimado</dt><dd id="p-price">—</dd>
+                <dt>Comisión</dt><dd id="p-fee">—</dd>
+                <dt>Total</dt><dd id="p-total">—</dd>
+              </dl>
+              <button type="submit" class="primary buy" id="trade-submit">Comprar</button>
+              <p class="error" id="trade-error"></p>
+              <p class="ok" id="trade-ok"></p>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <!-- Cartera -->
+      <section class="view hidden" id="view-portfolio">
+        <div class="card">
+          <h2>Posiciones abiertas</h2>
+          <table class="list" id="holdings-table">
+            <thead><tr><th>Activo</th><th class="r">Cantidad</th><th class="r">Precio medio</th><th class="r">Precio actual</th><th class="r">Valor</th><th class="r">G/P</th><th class="r">% cartera</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+          <p class="muted" id="holdings-empty">Aún no tienes posiciones. Ve a <em>Mercado</em> y haz tu primera compra.</p>
+        </div>
+        <div class="card">
+          <h2>Resumen</h2>
+          <dl class="kv" id="portfolio-kv"></dl>
+          <button id="reset" class="danger">Reiniciar cuenta</button>
+          <p class="muted small">Reiniciar borra tus posiciones, órdenes e historial y te devuelve el saldo inicial. Úsalo para empezar de cero con otra estrategia.</p>
+        </div>
+      </section>
+
+      <!-- Órdenes -->
+      <section class="view hidden" id="view-orders">
+        <div class="card">
+          <h2>Órdenes límite / stop</h2>
+          <table class="list" id="orders-table">
+            <thead><tr><th>#</th><th>Fecha</th><th>Par</th><th>Lado</th><th>Tipo</th><th class="r">Cantidad</th><th class="r">Precio</th><th>Estado</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Historial -->
+      <section class="view hidden" id="view-history">
+        <div class="card">
+          <h2>Historial de operaciones</h2>
+          <table class="list" id="trades-table">
+            <thead><tr><th>Fecha</th><th>Par</th><th>Lado</th><th class="r">Cantidad</th><th class="r">Precio</th><th class="r">Total</th><th class="r">Comisión</th><th class="r">G/P realizada</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Ranking -->
+      <section class="view hidden" id="view-ranking">
+        <div class="card">
+          <h2>Ranking de inversores</h2>
+          <p class="muted">Todos empiezan con el mismo saldo virtual. ¿Quién gestiona mejor su cartera?</p>
+          <table class="list" id="ranking-table">
+            <thead><tr><th>#</th><th>Usuario</th><th class="r">Patrimonio</th><th class="r">Rentabilidad</th><th class="r">Operaciones</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Aprende -->
+      <section class="view hidden" id="view-learn">
+        <div class="card learn">
+          <h2>Guía rápida para aprender</h2>
+          <details open><summary>¿Qué es este simulador?</summary>
+            <p>Es un entorno de <em>paper trading</em>: usas precios reales de un exchange (obtenidos con la librería de código abierto <a href="https://github.com/ccxt/ccxt" target="_blank" rel="noopener">CCXT</a>) pero con dinero ficticio. Todas las ganancias y pérdidas son virtuales.</p></details>
+          <details><summary>Orden a mercado</summary>
+            <p>Se ejecuta al instante al mejor precio disponible: compras al precio <strong>ask</strong> (lo que piden los vendedores) y vendes al <strong>bid</strong> (lo que ofrecen los compradores). La diferencia entre ambos es el <em>spread</em>, un coste oculto de operar.</p></details>
+          <details><summary>Orden límite</summary>
+            <p>Fijas el precio. Una compra límite sólo se ejecuta si el precio baja hasta tu nivel; una venta límite sólo si sube hasta él. Útil para «comprar barato» o para tomar ganancias.</p></details>
+          <details><summary>Orden stop (stop-loss)</summary>
+            <p>Una venta stop se activa si el precio <strong>cae</strong> hasta tu nivel y vende a mercado. Sirve para limitar pérdidas: por ejemplo, comprar BTC a 60 000 y poner un stop en 57 000 limita la pérdida a ~5 %.</p></details>
+          <details><summary>Comisiones</summary>
+            <p>Cada operación paga una comisión (<span id="fee-text"></span>). Operar muchas veces con importes pequeños hace que las comisiones se coman tus ganancias.</p></details>
+          <details><summary>Ganancia realizada vs. no realizada</summary>
+            <p><strong>No realizada</strong>: lo que ganarías o perderías si vendieras ahora. <strong>Realizada</strong>: el resultado ya cerrado de tus ventas (incluye comisiones).</p></details>
+          <details><summary>Diversificación y gestión del riesgo</summary>
+            <ul>
+              <li>No pongas todo tu capital en un solo activo; mira la columna «% cartera».</li>
+              <li>Define antes de entrar cuánto estás dispuesto a perder y coloca un stop.</li>
+              <li>Arriesgar un 1–2 % del patrimonio por operación es una regla clásica.</li>
+              <li>Las criptomonedas son muy volátiles: movimientos del 10 % en un día son normales.</li>
+            </ul></details>
+          <details><summary>Ejercicios sugeridos</summary>
+            <ol>
+              <li>Compra 1 000 USD de BTC a mercado y observa cómo cambia tu G/P no realizada.</li>
+              <li>Coloca una compra límite de ETH un 2 % por debajo del precio actual y espera a que se ejecute.</li>
+              <li>Protege una posición con una venta stop un 5 % por debajo de tu precio medio.</li>
+              <li>Crea una cartera diversificada con 4 activos y compárala en el ranking con tus compañeros.</li>
+            </ol></details>
+          <p class="muted small">⚠️ Esto es una herramienta educativa. Los resultados simulados no garantizan resultados reales y nada de lo que ves aquí es asesoramiento financiero.</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="app.js"></script>
+</body>
+</html>
