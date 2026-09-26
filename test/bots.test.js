@@ -32,18 +32,18 @@ test('bot compra con señal, respeta su monto y vende con take-profit', async ()
   setCandles([...Array(20).fill(100), 110]);
   setPrice(110);
   const bot = bots.create(user.id, { symbol: 'BTC/USD', strategy: 'breakout', params: { entry: 5, exit: 5 }, amount: 1100, takeProfit: 10 });
-  await bots.runBot(bots.get(user.id, bot.id));
+  await bots.runSignal(bots.raw(bot.id));
   let b = bots.get(user.id, bot.id);
   assert.ok(Math.abs(b.qty - 10) < 1e-9);
   assert.equal(b.entry_price, 110);
   assert.ok(Math.abs(broker.portfolio(user.id).cash - 8900) < 1e-6);
 
   // La misma vela no se evalúa dos veces.
-  await bots.runBot(b);
+  await bots.runSignal(bots.raw(bot.id));
   assert.equal(bots.get(user.id, bot.id).trade_count, 1);
 
   setPrice(122);
-  bots.checkRisk();
+  bots.onTick();
   b = bots.get(user.id, bot.id);
   assert.equal(b.qty, 0);
   assert.ok(Math.abs(b.realized - 120) < 1e-6);
@@ -55,7 +55,7 @@ test('bot no vende las compras manuales del usuario', async () => {
   broker.marketOrder(user.id, 'BTC/USD', 'buy', 5);
   const bot = bots.create(user.id, { symbol: 'BTC/USD', strategy: 'rsi', amount: 100 });
   setPrice(100);
-  bots.sell(bots.get(user.id, bot.id), 'test');
+  bots.sellAll(bots.raw(bot.id), 'test');
   assert.equal(broker.portfolio(user.id).holdings[0].qty, 5);
 });
 

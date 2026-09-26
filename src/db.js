@@ -84,12 +84,40 @@ function openDb(file) {
       created_at    TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS custom_strategies (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name        TEXT NOT NULL,
+      definition  TEXT NOT NULL,
+      public      INTEGER NOT NULL DEFAULT 0,
+      copied_from INTEGER,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS bot_events (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      bot_id      INTEGER NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+      message     TEXT NOT NULL,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_bot_events ON bot_events(bot_id, id DESC);
     CREATE INDEX IF NOT EXISTS idx_trades_user ON trades(user_id, id DESC);
     CREATE INDEX IF NOT EXISTS idx_orders_open ON orders(status, symbol);
   `);
   // Migración para bases de datos creadas con la versión anterior.
   const cols = db.prepare('PRAGMA table_info(trades)').all().map((c) => c.name);
   if (!cols.includes('bot_id')) db.exec('ALTER TABLE trades ADD COLUMN bot_id INTEGER');
+  const botCols = db.prepare('PRAGMA table_info(bots)').all().map((c) => c.name);
+  const add = {
+    type: "TEXT NOT NULL DEFAULT 'signal'", // signal | dca | grid
+    name: 'TEXT',
+    config: "TEXT NOT NULL DEFAULT '{}'", // configuración y estado de bots DCA / grid
+    trailing: 'REAL NOT NULL DEFAULT 0', // trailing stop en %
+    peak: 'REAL', // precio máximo desde la entrada (para el trailing stop)
+  };
+  for (const [col, ddl] of Object.entries(add)) if (!botCols.includes(col)) db.exec(`ALTER TABLE bots ADD COLUMN ${col} ${ddl}`);
   return db;
 }
 

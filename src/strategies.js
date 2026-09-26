@@ -182,8 +182,19 @@ function normalizeParams(strategy, raw = {}) {
   return out;
 }
 
+// Obtiene la estrategia a usar: una predefinida (id + params) o una personalizada (definition).
+function resolve({ strategy, params, definition }) {
+  if (definition) {
+    const { compile } = require('./custom');
+    const s = compile(definition);
+    return { strategy: s, params: {} };
+  }
+  const s = getStrategy(strategy);
+  return { strategy: s, params: normalizeParams(s, params) };
+}
+
 function publicList() {
   return STRATEGIES.map(({ id, name, description, params }) => ({ id, name, description, params }));
 }
 
-module.exports = { STRATEGIES, getStrategy, normalizeParams, publicList };
+module.exports = { STRATEGIES, getStrategy, normalizeParams, publicList, resolve };

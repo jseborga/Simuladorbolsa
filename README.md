@@ -26,8 +26,14 @@ Los precios y las velas se obtienen con [CCXT](https://github.com/ccxt/ccxt) (li
   - Panel «Horarios de mercado» con el estado en tiempo real (abierta / cerrada / pausa de almuerzo y cuánto falta) del forex y de las bolsas de Sídney, Tokio, Hong Kong, Fráncfort, Londres, Nueva York y São Paulo. El horario de verano se maneja automáticamente; los festivos no.
 - **Herramientas de dibujo**: línea horizontal, línea de tendencia (con % de variación), Fibonacci (con zona OTE 62–79 % y extensiones −0,27 / −0,62) y rectángulo de zona. Se guardan por par, con deshacer y borrar todo.
 - **Cruz de precio** con datos OHLC e indicadores de cada vela.
-- **Backtesting**: prueba 6 estrategias con datos históricos reales (hasta 1000 velas), con comisiones, stop-loss, take-profit y tamaño de posición. Muestra las operaciones sobre el gráfico, la curva de capital frente a «comprar y mantener», máxima caída, % de aciertos, factor de beneficio, etc.
-- **Bots de trading**: activa una estrategia para que opere sola con tu dinero virtual al cierre de cada vela (1m a 1d), con stop-loss/take-profit. Sólo vende lo que el propio bot compró. Se puede crear un bot directamente desde un backtest.
+- **Constructor visual de estrategias**: crea tus propias reglas de compra y venta sin programar, combinando comparaciones («RSI 14 es menor que 30», «precio cruza por encima de EMA 50»…) con modo Y/O y condiciones ICT u horarias («toca un FVG alcista», «CHoCH bajista», «kill zone de Londres», «zona discount»…). Incluye plantillas, resumen en lenguaje natural, y se pueden **compartir con la comunidad** y copiar las de otros usuarios.
+- **Backtesting**: prueba las estrategias predefinidas o las tuyas con datos históricos reales (hasta 1000 velas), con comisiones, stop-loss, take-profit, trailing stop y tamaño de posición. Muestra las operaciones sobre el gráfico, la curva de capital frente a «comprar y mantener», máxima caída, % de aciertos, factor de beneficio, etc.
+- **Bots de trading** (como en 3Commas, Pionex o Binance), que operan solos con tu dinero virtual y sólo venden lo que ellos mismos compraron:
+  - 🧠 **Señales**: ejecuta una estrategia (predefinida o del constructor) al cierre de cada vela (1m a 1d), con stop-loss, take-profit y trailing stop.
+  - 📅 **DCA**: compra periódica de una cantidad fija, compras extra en caídas y take-profit sobre el precio medio del ciclo.
+  - 🔲 **Grid**: reparte la inversión en N niveles de un rango; compra al bajar un nivel y vende al subir al siguiente.
+  - Se pueden **editar en marcha** (monto, riesgo, temporalidad, parámetros…), pausar, y cada uno tiene un **registro** de eventos y operaciones.
+  - Se crean desde la pestaña Bots, desde un backtest o desde el constructor.
 - **Órdenes**:
   - A mercado (compra al *ask*, vende al *bid*, como en un exchange real).
   - Límite (comprar barato / tomar ganancias).
@@ -84,15 +90,16 @@ src/
   server.js   API REST (Express) y arranque
   market.js   Precios vía CCXT + modo simulado
   broker.js   Motor de paper trading: usuarios, órdenes, cartera, ranking
-  strategies.js  Estrategias de trading (señales de compra/venta)
+  strategies.js  Estrategias predefinidas (señales de compra/venta)
+  custom.js   Constructor de estrategias: validación, plantillas y evaluación de reglas
   backtest.js Motor de backtesting
-  bots.js     Bots que ejecutan estrategias en vivo sobre la cuenta virtual
+  bots.js     Bots de señales, DCA y grid sobre la cuenta virtual
   db.js       Esquema SQLite
 public/
   indicators.js  Indicadores técnicos, ICT y horarios de mercado (compartidos por navegador y servidor)
   chart.js    Gráficos en canvas (velas, indicadores, zonas, dibujos, cruz de precio, curva de capital)
   app.js, index.html, styles.css  Interfaz web (sin dependencias)
-test/         Tests de órdenes, indicadores, ICT, horarios, backtesting y bots
+test/         Tests de órdenes, indicadores, ICT, horarios, constructor, backtesting y bots
 ```
 
 ## API
@@ -106,9 +113,14 @@ test/         Tests de órdenes, indicadores, ICT, horarios, backtesting y bots
 | DELETE | `/api/orders/:id` | Cancelar orden abierta |
 | POST | `/api/reset` | Reiniciar la cuenta |
 | GET  | `/api/strategies` | Estrategias disponibles y sus parámetros |
-| POST | `/api/backtest` | `{symbol, timeframe, limit, strategy, params, stopLoss?, takeProfit?, positionPct?}` |
-| GET/POST | `/api/bots` | Listar / crear bots `{symbol, timeframe, strategy, params, amount, stopLoss?, takeProfit?}` |
-| PATCH | `/api/bots/:id` | `{active: true\|false}` pausar o reanudar |
+| GET  | `/api/strategy-schema` | Indicadores, comparaciones, condiciones ICT y plantillas del constructor |
+| GET/POST | `/api/custom-strategies` | Mis estrategias y las de la comunidad / crear `{definition, public}` |
+| PUT/DELETE | `/api/custom-strategies/:id` | Editar / eliminar una estrategia propia |
+| POST | `/api/custom-strategies/:id/copy` | Copiar una estrategia de la comunidad |
+| POST | `/api/backtest` | `{symbol, timeframe, limit, strategy+params \| customId \| definition, stopLoss?, takeProfit?, trailing?, positionPct?}` |
+| GET/POST | `/api/bots` | Listar / crear bots. `type`: `signal` (estrategia), `dca` (`amount, intervalHours, dropPct, maxBuys, takeProfit`) o `grid` (`low, high, grids, investment`) |
+| PATCH | `/api/bots/:id` | Pausar/reanudar (`active`) o cambiar la configuración |
+| GET | `/api/bots/:id/events` · `/api/bots/:id/trades` | Registro y operaciones de un bot |
 | DELETE | `/api/bots/:id?close=1` | Eliminar bot (con `close=1` vende su posición) |
 | GET  | `/api/leaderboard` | Ranking |
 

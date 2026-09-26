@@ -6,6 +6,7 @@ const { Broker, BrokerError } = require('./broker');
 const { BotManager } = require('./bots');
 const { backtest } = require('./backtest');
 const { publicList } = require('./strategies');
+const { schema, validateDefinition } = require('./custom');
 
 function createApp(broker, market, bots) {
   const app = express();
@@ -82,7 +83,9 @@ function createApp(broker, market, bots) {
   api.get('/strategies', (req, res) => res.json(publicList()));
 
   api.post('/backtest', async (req, res) => {
-    const { symbol, timeframe = '1h', limit = 500, strategy, params, stopLoss, takeProfit, positionPct } = req.body ?? {};
+    const { symbol, timeframe = '1h', limit = 500, strategy, params, stopLoss, takeProfit, trailing, positionPct, customId } = req.body ?? {};
+    let { definition } = req.body ?? {};
+    if (customId != null) definition = customStrategy(req, Number(customId));
     if (!market.symbols.includes(symbol)) throw new BrokerError('Símbolo no soportado');
     let candles;
     try {
@@ -91,10 +94,64 @@ function createApp(broker, market, bots) {
       throw new BrokerError('No se pudieron obtener datos históricos: ' + e.message, 502);
     }
     const result = backtest(candles, {
-      strategy, params, stopLoss, takeProfit, positionPct,
+      strategy, params, definition, stopLoss, takeProfit, trailing, positionPct,
       initialCash: broker.initialCash, feeRate: broker.feeFor(symbol),
     });
     res.json({ ...result, candles });
+  });
+
+  // ---------- Estrategias personalizadas (constructor visual) ----------
+  const optionalUser = (req) => broker.userByToken((req.get('authorization') || '').replace(/^Bearer\s+/i, ''));
+  const customStrategy = (req, id) => {
+    const user = optionalUser(req);
+    const row = broker.db.prepare('SELECT * FROM custom_strategies WHERE id = ? AND (public = 1 OR user_id = ?)').get(id, user?.id ?? -1);
+    if (!row) throw new BrokerError('Estrategia personalizada no encontrada', 404);
+    return JSON.parse(row.definition);
+  };
+  const presentCustom = (r) => ({ ...r, definition: JSON.parse(r.definition), public: !!r.public });
+
+  api.get('/strategy-schema', (req, res) => res.json(schema()));
+
+  api.get('/custom-strategies', auth, (req, res) => {
+    const mine = broker.db.prepare('SELECT * FROM custom_strategies WHERE user_id = ? ORDER BY updated_at DESC').all(req.user.id);
+    const community = broker.db
+      .prepare('SELECT c.*, u.username AS author FROM custom_strategies c JOIN users u ON u.id = c.user_id WHERE c.public = 1 AND c.user_id != ? ORDER BY c.updated_at DESC LIMIT 100')
+      .all(req.user.id);
+    res.json({ mine: mine.map(presentCustom), community: community.map(presentCustom) });
+  });
+
+  api.post('/custom-strategies', auth, (req, res) => {
+    const def = validateDefinition(req.body?.definition);
+    const { n } = broker.db.prepare('SELECT COUNT(*) AS n FROM custom_strategies WHERE user_id = ?').get(req.user.id);
+    if (n >= 50) throw new BrokerError('Máximo 50 estrategias por usuario');
+    const r = broker.db
+      .prepare('INSERT INTO custom_strategies (user_id, name, definition, public) VALUES (?, ?, ?, ?)')
+      .run(req.user.id, def.name, JSON.stringify(def), req.body?.public ? 1 : 0);
+    res.status(201).json(presentCustom(broker.db.prepare('SELECT * FROM custom_strategies WHERE id = ?').get(Number(r.lastInsertRowid))));
+  });
+
+  api.put('/custom-strategies/:id', auth, (req, res) => {
+    const def = validateDefinition(req.body?.definition);
+    const r = broker.db
+      .prepare("UPDATE custom_strategies SET name = ?, definition = ?, public = ?, updated_at = datetime('now') WHERE id = ? AND user_id = ?")
+      .run(def.name, JSON.stringify(def), req.body?.public ? 1 : 0, Number(req.params.id), req.user.id);
+    if (!r.changes) throw new BrokerError('Estrategia no encontrada', 404);
+    res.json(presentCustom(broker.db.prepare('SELECT * FROM custom_strategies WHERE id = ?').get(Number(req.params.id))));
+  });
+
+  api.delete('/custom-strategies/:id', auth, (req, res) => {
+    const r = broker.db.prepare('DELETE FROM custom_strategies WHERE id = ? AND user_id = ?').run(Number(req.params.id), req.user.id);
+    if (!r.changes) throw new BrokerError('Estrategia no encontrada', 404);
+    res.json({ ok: true });
+  });
+
+  // Copia una estrategia de la comunidad a "Mis estrategias" para poder editarla.
+  api.post('/custom-strategies/:id/copy', auth, (req, res) => {
+    const def = customStrategy(req, Number(req.params.id));
+    const r = broker.db
+      .prepare('INSERT INTO custom_strategies (user_id, name, definition, copied_from) VALUES (?, ?, ?, ?)')
+      .run(req.user.id, `${def.name} (copia)`.slice(0, 60), JSON.stringify({ ...def, name: `${def.name} (copia)`.slice(0, 60) }), Number(req.params.id));
+    res.status(201).json(presentCustom(broker.db.prepare('SELECT * FROM custom_strategies WHERE id = ?').get(Number(r.lastInsertRowid))));
   });
 
   // ---------- Bots ----------
@@ -104,10 +161,17 @@ function createApp(broker, market, bots) {
     res.status(201).json(bots.create(req.user.id, req.body ?? {}));
   });
 
+  // { active } pausa o reanuda; el resto de campos cambian la configuración.
   api.patch('/bots/:id', auth, (req, res) => {
-    bots.setActive(req.user.id, Number(req.params.id), Boolean(req.body?.active));
-    res.json({ ok: true });
+    const { active, ...changes } = req.body ?? {};
+    const id = Number(req.params.id);
+    if (Object.keys(changes).length) bots.update(req.user.id, id, changes);
+    if (active !== undefined) bots.setActive(req.user.id, id, Boolean(active));
+    res.json(bots.get(req.user.id, id));
   });
+
+  api.get('/bots/:id/events', auth, (req, res) => res.json(bots.events(req.user.id, Number(req.params.id))));
+  api.get('/bots/:id/trades', auth, (req, res) => res.json(bots.trades(req.user.id, Number(req.params.id))));
 
   api.delete('/bots/:id', auth, (req, res) => {
     bots.remove(req.user.id, Number(req.params.id), { closePosition: req.query.close === '1' });

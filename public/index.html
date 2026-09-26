@@ -37,6 +37,7 @@
         <button class="nav" data-view="orders">Órdenes</button>
         <button class="nav" data-view="history">Historial</button>
         <button class="nav" data-view="backtest">Backtesting</button>
+        <button class="nav" data-view="builder">Estrategias</button>
         <button class="nav" data-view="bots">Bots</button>
         <button class="nav" data-view="ranking">Ranking</button>
         <button class="nav" data-view="learn">Aprende</button>
@@ -224,11 +225,13 @@
               </div>
               <label>Estrategia <select name="strategy"></select></label>
               <p class="hint" id="bt-desc"></p>
+              <p class="hint"><a href="#" class="goto-builder">➕ Crea tu propia estrategia con el constructor</a></p>
               <div id="bt-params" class="params"></div>
               <div class="row2">
                 <label>Stop-loss % <input name="stopLoss" type="number" step="any" min="0" value="0"></label>
                 <label>Take-profit % <input name="takeProfit" type="number" step="any" min="0" value="0"></label>
               </div>
+              <label>Trailing stop % <input name="trailing" type="number" step="any" min="0" value="0" title="Vende si el precio cae este % desde el máximo alcanzado tras comprar"></label>
               <label>% del capital por operación <input name="positionPct" type="number" min="1" max="100" value="100"></label>
               <button type="submit" class="primary">▶ Ejecutar backtest</button>
               <p class="error" id="bt-error"></p>
@@ -253,25 +256,123 @@
         </div>
       </section>
 
+      <!-- Constructor de estrategias -->
+      <section class="view hidden" id="view-builder">
+        <div class="bt-grid">
+          <div class="card">
+            <h2>Mis estrategias</h2>
+            <button type="button" class="primary" id="sb-new">➕ Nueva estrategia</button>
+            <label class="mt">Empezar desde una plantilla
+              <select id="sb-template"><option value="">— Elegir plantilla —</option></select>
+            </label>
+            <div id="sb-mine" class="sb-list"></div>
+            <h2 class="mt">Comunidad</h2>
+            <p class="muted small">Estrategias que otros usuarios compartieron. Cópialas para editarlas o úsalas directamente en backtesting y bots.</p>
+            <div id="sb-community" class="sb-list"></div>
+          </div>
+          <div class="card">
+            <div class="chart-head">
+              <h2 id="sb-title">Nueva estrategia</h2>
+              <span class="muted small" id="sb-status"></span>
+            </div>
+            <p class="muted small">Define cuándo comprar y cuándo vender combinando indicadores, precio y conceptos ICT, como en los constructores de estrategias de otras plataformas. Las reglas se evalúan al cierre de cada vela.</p>
+            <form id="sb-form">
+              <label>Nombre <input name="name" maxlength="60" required placeholder="p. ej. Mi RSI con tendencia"></label>
+              <label>Descripción <input name="description" maxlength="500" placeholder="¿Qué idea hay detrás?"></label>
+
+              <div class="rules">
+                <div class="rules-head">
+                  <h3>🟢 Comprar cuando se cumplan</h3>
+                  <select name="entryMode"><option value="all">TODAS las condiciones (Y)</option><option value="any">ALGUNA condición (O)</option></select>
+                </div>
+                <div id="sb-entry" class="cond-list"></div>
+                <div class="add-row">
+                  <button type="button" data-add="entry" data-kind="compare">＋ Comparación</button>
+                  <button type="button" data-add="entry" data-kind="flag">＋ Condición ICT / horario</button>
+                </div>
+              </div>
+
+              <div class="rules">
+                <div class="rules-head">
+                  <h3>🔴 Vender cuando se cumplan</h3>
+                  <select name="exitMode"><option value="any">ALGUNA condición (O)</option><option value="all">TODAS las condiciones (Y)</option></select>
+                </div>
+                <div id="sb-exit" class="cond-list"></div>
+                <div class="add-row">
+                  <button type="button" data-add="exit" data-kind="compare">＋ Comparación</button>
+                  <button type="button" data-add="exit" data-kind="flag">＋ Condición ICT / horario</button>
+                </div>
+                <p class="hint">Si no pones reglas de venta, la posición se cierra sólo con el stop-loss, take-profit o trailing stop que configures en el backtest o en el bot.</p>
+              </div>
+
+              <p class="hint" id="sb-summary"></p>
+              <label class="chk"><input type="checkbox" name="public"> Compartir con la comunidad</label>
+              <div class="btn-row">
+                <button type="submit" class="primary">💾 Guardar</button>
+                <button type="button" id="sb-test">▶ Probar en backtest</button>
+                <button type="button" id="sb-bot">🤖 Crear bot</button>
+                <button type="button" class="danger hidden" id="sb-delete">Eliminar</button>
+              </div>
+              <p class="error" id="sb-error"></p>
+            </form>
+          </div>
+        </div>
+      </section>
+
       <!-- Bots -->
       <section class="view hidden" id="view-bots">
         <div class="bt-grid">
           <div class="card">
             <h2>Nuevo bot</h2>
-            <p class="muted small">Un bot opera solo con tu dinero virtual: al cerrar cada vela revisa la estrategia y compra o vende automáticamente. Sólo vende lo que él mismo compró.</p>
+            <div class="tabs bot-types">
+              <button type="button" class="tab active" data-bot-type="signal" title="Opera según una estrategia">🧠 Señales</button>
+              <button type="button" class="tab" data-bot-type="dca" title="Compra periódica">📅 DCA</button>
+              <button type="button" class="tab" data-bot-type="grid" title="Compra y vende en un rango">🔲 Grid</button>
+            </div>
+            <p class="muted small" id="bot-type-desc"></p>
             <form id="bot-form">
+              <label>Nombre (opcional) <input name="name" maxlength="40" placeholder="p. ej. BTC tendencia"></label>
               <label>Par <select name="symbol"></select></label>
-              <label>Temporalidad
-                <select name="timeframe"><option>1m</option><option>5m</option><option selected>15m</option><option>1h</option><option>4h</option><option>1d</option></select>
-              </label>
-              <label>Estrategia <select name="strategy"></select></label>
-              <p class="hint" id="bot-desc"></p>
-              <div id="bot-params" class="params"></div>
-              <label>USD por operación <input name="amount" type="number" step="any" min="1" value="1000"></label>
+
+              <div data-for="signal">
+                <label>Temporalidad
+                  <select name="timeframe"><option>1m</option><option>5m</option><option selected>15m</option><option>1h</option><option>4h</option><option>1d</option></select>
+                </label>
+                <label>Estrategia <select name="strategy"></select></label>
+                <p class="hint" id="bot-desc"></p>
+                <div id="bot-params" class="params"></div>
+              </div>
+
+              <div data-for="signal dca">
+                <label><span data-for="signal">USD por operación</span><span data-for="dca">USD por compra</span>
+                  <input name="amount" type="number" step="any" min="1" value="500"></label>
+              </div>
+
+              <div data-for="dca">
+                <div class="row2">
+                  <label>Comprar cada (horas) <input name="intervalHours" type="number" step="any" min="0.1" value="24"></label>
+                  <label>Máx. compras (0 = sin límite) <input name="maxBuys" type="number" min="0" value="0"></label>
+                </div>
+                <label>Compra extra si cae (%) <input name="dropPct" type="number" step="any" min="0" value="5" title="Compra adicional cuando el precio cae este % desde la última compra"></label>
+              </div>
+
+              <div data-for="grid">
+                <div class="row2">
+                  <label>Precio mínimo <input name="low" type="number" step="any" min="0"></label>
+                  <label>Precio máximo <input name="high" type="number" step="any" min="0"></label>
+                </div>
+                <div class="row2">
+                  <label>Niveles <input name="grids" type="number" min="2" max="50" value="10"></label>
+                  <label>Inversión total USD <input name="investment" type="number" step="any" min="1" value="2000"></label>
+                </div>
+                <p class="hint" id="grid-hint"></p>
+              </div>
+
               <div class="row2">
                 <label>Stop-loss % <input name="stopLoss" type="number" step="any" min="0" value="0"></label>
-                <label>Take-profit % <input name="takeProfit" type="number" step="any" min="0" value="0"></label>
+                <label data-for="signal dca">Take-profit % <input name="takeProfit" type="number" step="any" min="0" value="0"></label>
               </div>
+              <label data-for="signal">Trailing stop % <input name="trailing" type="number" step="any" min="0" value="0" title="Vende si el precio cae este % desde el máximo alcanzado tras comprar"></label>
               <button type="submit" class="primary">🤖 Activar bot</button>
               <p class="error" id="bot-error"></p>
             </form>
@@ -363,8 +464,14 @@
               <li><strong>Factor de beneficio</strong>: ganancias totales ÷ pérdidas totales. Mayor que 1 es rentable.</li>
               <li>Cuidado con el <em>sobreajuste</em>: si ajustas los parámetros hasta que el pasado sale perfecto, probablemente falle en el futuro. Prueba la misma configuración en otros pares y periodos.</li>
             </ul></details>
-          <details><summary>Bots de trading</summary>
-            <p>Un bot sigue las reglas sin emociones, las 24 horas. Crea uno con la estrategia que mejor funcionó en el backtest y compara su resultado real con lo que esperabas. Los bots sólo funcionan mientras el servidor está encendido.</p></details>
+          <details><summary>Bots de trading y constructor de estrategias</summary>
+            <p>Un bot sigue las reglas sin emociones, las 24 horas. Los bots sólo funcionan mientras el servidor está encendido. Hay tres tipos, como en plataformas como 3Commas, Pionex o Binance:</p>
+            <ul>
+              <li><strong>🧠 Bot de señales</strong>: ejecuta una estrategia (predefinida o tuya) al cierre de cada vela. Admite stop-loss, take-profit y <strong>trailing stop</strong> (vende si el precio cae un % desde el máximo alcanzado: deja correr las ganancias y protege lo ganado).</li>
+              <li><strong>📅 Bot DCA</strong> (<em>Dollar Cost Averaging</em>): compra una cantidad fija cada X horas, sin importar el precio. Opcionalmente compra extra cuando el precio cae y vende todo al alcanzar un % de ganancia sobre el precio medio. Reduce el riesgo de «entrar en mal momento».</li>
+              <li><strong>🔲 Bot grid</strong>: reparte la inversión en niveles dentro de un rango. Compra cada vez que el precio baja un nivel y vende cuando sube al siguiente. Gana en mercados laterales; si el precio sale del rango por abajo, acumula pérdidas (usa el stop-loss).</li>
+            </ul>
+            <p>En <strong>Estrategias</strong> puedes crear las tuyas combinando reglas del tipo «RSI 14 es menor que 30» o «precio cruza por encima de EMA 50», y condiciones ICT como «el precio toca un FVG alcista» o «kill zone de Londres». Pruébalas en el backtest, compártelas con la comunidad y conviértelas en bots. Todos los bots se pueden <strong>editar</strong> en marcha y tienen un <strong>registro</strong> de lo que hicieron.</p></details>
           <details><summary>Ejercicios sugeridos</summary>
             <ol>
               <li>Compra 1 000 USD de BTC a mercado y observa cómo cambia tu G/P no realizada.</li>

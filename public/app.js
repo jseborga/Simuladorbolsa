@@ -105,7 +105,8 @@ function showView(v) {
   if (v === 'ranking') loadRanking();
   if (v === 'market') drawChart();
   if (v === 'backtest' && state.bt) drawBacktest();
-  if (v === 'bots') loadBots();
+  if (v === 'bots') loadBots(true);
+  if (v === 'builder' && !$('#sb-form').name.value && !$$('#sb-entry .cond').length) $('#sb-new').click();
 }
 
 // ---------- Datos ----------
@@ -603,21 +604,64 @@ $('#reset').addEventListener('click', async () => {
   await loadMe();
 });
 
-// ---------- Estrategias (compartidas por backtesting y bots) ----------
+// ---------- Estrategias (predefinidas y personalizadas) ----------
+// Valor del <select>: id predefinido ('sma_cross'), 'custom:ID' o 'draft' (borrador del constructor).
+state.custom = { mine: [], community: [] };
+state.draft = null;
+
 async function loadStrategies() {
-  if (state.strategies) return;
-  state.strategies = await api('/strategies');
-  for (const f of [$('#bt-form'), $('#bot-form')]) {
-    f.symbol.innerHTML = state.config.symbols.map((x) => `<option>${esc(x)}</option>`).join('');
-    f.strategy.innerHTML = state.strategies.map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join('');
+  if (!state.strategies) {
+    [state.strategies, state.schema] = await Promise.all([api('/strategies'), api('/strategy-schema')]);
+    for (const f of [$('#bt-form'), $('#bot-form')]) {
+      f.symbol.innerHTML = state.config.symbols.map((x) => `<option>${esc(x)}</option>`).join('');
+    }
+    $('#sb-template').innerHTML += state.schema.templates.map((t, i) => `<option value="${i}">${esc(t.name)}</option>`).join('');
   }
-  renderParams('bt');
-  renderParams('bot');
+  await loadCustom();
+}
+
+async function loadCustom() {
+  state.custom = await api('/custom-strategies');
+  for (const prefix of ['bt', 'bot']) fillStrategySelect(prefix);
+  renderStrategyLists();
+}
+
+function fillStrategySelect(prefix, value) {
+  const sel = $(`#${prefix}-form`).strategy;
+  const prev = value ?? sel.value;
+  const opt = (v, label) => `<option value="${esc(v)}">${esc(label)}</option>`;
+  let html = `<optgroup label="Predefinidas">${state.strategies.map((x) => opt(x.id, x.name)).join('')}</optgroup>`;
+  if (state.draft) html += `<optgroup label="Constructor">${opt('draft', '✏️ Borrador: ' + state.draft.name)}</optgroup>`;
+  if (state.custom.mine.length) html += `<optgroup label="Mis estrategias">${state.custom.mine.map((x) => opt('custom:' + x.id, x.name)).join('')}</optgroup>`;
+  if (state.custom.community.length) html += `<optgroup label="Comunidad">${state.custom.community.map((x) => opt('custom:' + x.id, `${x.name} · ${x.author}`)).join('')}</optgroup>`;
+  sel.innerHTML = html;
+  if ([...sel.options].some((o) => o.value === prev)) sel.value = prev;
+  renderParams(prefix);
+}
+
+function customById(id) {
+  return [...state.custom.mine, ...state.custom.community].find((x) => x.id === id);
+}
+
+// Definición de la estrategia elegida en un <select> (sólo personalizadas y borrador).
+function selectedDefinition(value) {
+  if (value === 'draft') return state.draft;
+  if (value.startsWith('custom:')) return customById(Number(value.slice(7)))?.definition;
+  return null;
 }
 
 function renderParams(prefix, values = {}) {
   const f = $(`#${prefix}-form`);
-  const st = state.strategies.find((x) => x.id === f.strategy.value);
+  const v = f.strategy.value;
+  const def = selectedDefinition(v);
+  if (def) {
+    $(`#${prefix}-desc`).innerHTML = `${esc(def.description || 'Estrategia personalizada.')}<br><span class="muted">${esc(describeDefinition(def))}</span>`;
+    $(`#${prefix}-params`).innerHTML = v.startsWith('custom:') && state.custom.mine.some((x) => 'custom:' + x.id === v)
+      ? `<p class="hint"><a href="#" data-edit-custom="${v.slice(7)}">✏️ Editar en el constructor</a></p>` : '';
+    return;
+  }
+  const st = state.strategies.find((x) => x.id === v);
+  if (!st) return;
   $(`#${prefix}-desc`).textContent = st.description;
   $(`#${prefix}-params`).innerHTML = st.params
     .map((p) => `<label>${esc(p.label)} <input type="number" data-param="${p.key}" value="${values[p.key] ?? p.default}" min="${p.min}" max="${p.max}" step="${p.step ?? 1}"></label>`)
@@ -630,8 +674,231 @@ function readParams(prefix) {
   return out;
 }
 
+// Campos de estrategia para enviar al servidor.
+function strategyPayload(prefix) {
+  const v = $(`#${prefix}-form`).strategy.value;
+  if (v === 'draft') return { definition: state.draft };
+  if (v.startsWith('custom:')) return { customId: Number(v.slice(7)) };
+  return { strategy: v, params: readParams(prefix) };
+}
+
 $('#bt-form').strategy.addEventListener('change', () => renderParams('bt'));
 $('#bot-form').strategy.addEventListener('change', () => renderParams('bot'));
+document.addEventListener('click', (e) => {
+  const a = e.target.closest('[data-edit-custom], .goto-builder');
+  if (!a) return;
+  e.preventDefault();
+  if (a.dataset.editCustom) openCustom(Number(a.dataset.editCustom));
+  showView('builder');
+});
+
+// ---------- Constructor de estrategias ----------
+const opLabel = (id) => state.schema.ops.find((o) => o.id === id)?.label ?? id;
+const operandDef = (id) => state.schema.operands.find((o) => o.id === id);
+
+function operandText(o) {
+  if (o.ind === 'value') return String(o.value);
+  const d = operandDef(o.ind);
+  const args = [o.period, o.ind.startsWith('bb_') ? o.period2 : undefined].filter((x) => x !== undefined);
+  return `${d.label}${args.length ? ` (${args.join(', ')})` : ''}`;
+}
+
+function describeBlock(b) {
+  const join = b.mode === 'any' ? ' O ' : ' Y ';
+  return b.conditions.map((c) => (c.type === 'flag'
+    ? state.schema.flags.find((f) => f.id === c.key)?.label
+    : `${operandText(c.left)} ${opLabel(c.op)} ${operandText(c.right)}`)).join(join);
+}
+
+function describeDefinition(d) {
+  const exit = d.exit?.conditions?.length ? `Vender si ${describeBlock(d.exit)}.` : 'Salida sólo por stop-loss / take-profit / trailing.';
+  return `Comprar si ${describeBlock(d.entry)}. ${exit}`;
+}
+
+function operandEditor(o, side) {
+  const d = operandDef(o.ind);
+  const opts = state.schema.operands.map((x) => `<option value="${x.id}"${x.id === o.ind ? ' selected' : ''}>${esc(x.label)}</option>`).join('');
+  let html = `<select data-f="${side}.ind">${opts}</select>`;
+  if (o.ind === 'value') html += `<input type="number" step="any" data-f="${side}.value" value="${o.value ?? 0}">`;
+  if (d.period !== undefined) html += `<input type="number" min="1" max="500" data-f="${side}.period" value="${o.period ?? d.period}" title="Periodo">`;
+  if (d.period2 !== undefined) html += `<input type="number" step="0.1" min="0.1" max="10" data-f="${side}.period2" value="${o.period2 ?? d.period2}" title="Desviaciones">`;
+  return html;
+}
+
+function condRow(c) {
+  if (c.type === 'flag') {
+    const opts = state.schema.flags.map((f) => `<option value="${f.id}"${f.id === c.key ? ' selected' : ''}>${esc(f.label)}</option>`).join('');
+    return `<div class="cond" data-kind="flag"><select data-f="key">${opts}</select><button type="button" class="x" title="Quitar">✕</button></div>`;
+  }
+  const ops = state.schema.ops.map((o) => `<option value="${o.id}"${o.id === c.op ? ' selected' : ''}>${esc(o.label)}</option>`).join('');
+  return `<div class="cond" data-kind="compare">${operandEditor(c.left, 'left')}<select data-f="op">${ops}</select>${operandEditor(c.right, 'right')}<button type="button" class="x" title="Quitar">✕</button></div>`;
+}
+
+function readCond(row) {
+  const get = (f) => row.querySelector(`[data-f="${f}"]`)?.value;
+  if (row.dataset.kind === 'flag') return { type: 'flag', key: get('key') };
+  const operand = (side) => {
+    const o = { ind: get(`${side}.ind`) };
+    for (const k of ['period', 'period2', 'value']) if (get(`${side}.${k}`) !== undefined) o[k] = Number(get(`${side}.${k}`));
+    return o;
+  };
+  return { type: 'compare', left: operand('left'), op: get('op'), right: operand('right') };
+}
+
+function readDefinition() {
+  const f = $('#sb-form');
+  return {
+    name: f.name.value.trim(),
+    description: f.description.value.trim(),
+    entry: { mode: f.entryMode.value, conditions: [...$$('#sb-entry .cond')].map(readCond) },
+    exit: { mode: f.exitMode.value, conditions: [...$$('#sb-exit .cond')].map(readCond) },
+  };
+}
+
+function loadDefinition(def, { id = null, isPublic = false } = {}) {
+  const f = $('#sb-form');
+  state.sbId = id;
+  f.name.value = def.name || '';
+  f.description.value = def.description || '';
+  f.entryMode.value = def.entry?.mode || 'all';
+  f.exitMode.value = def.exit?.mode || 'any';
+  f.public.checked = isPublic;
+  $('#sb-entry').innerHTML = (def.entry?.conditions || []).map(condRow).join('');
+  $('#sb-exit').innerHTML = (def.exit?.conditions || []).map(condRow).join('');
+  $('#sb-title').textContent = id ? 'Editar estrategia' : 'Nueva estrategia';
+  $('#sb-delete').classList.toggle('hidden', !id);
+  $('#sb-error').textContent = '';
+  $('#sb-status').textContent = '';
+  updateSummary();
+  renderStrategyLists();
+}
+
+function openCustom(id) {
+  const s = state.custom.mine.find((x) => x.id === id);
+  if (s) loadDefinition(s.definition, { id: s.id, isPublic: s.public });
+}
+
+function updateSummary() {
+  const d = readDefinition();
+  $('#sb-summary').textContent = d.entry.conditions.length ? '📝 ' + describeDefinition(d) : 'Añade al menos una condición de compra.';
+}
+
+// Al cambiar el indicador de un operando se regenera la fila (cambian los campos de periodo/valor).
+$('#sb-form').addEventListener('change', (e) => {
+  const f = e.target.dataset.f;
+  if (f && f.endsWith('.ind')) {
+    const row = e.target.closest('.cond');
+    row.outerHTML = condRow(readCond(row));
+  }
+  updateSummary();
+});
+$('#sb-form').addEventListener('input', updateSummary);
+$('#sb-form').addEventListener('click', (e) => {
+  if (e.target.classList.contains('x')) {
+    e.target.closest('.cond').remove();
+    updateSummary();
+  }
+  const add = e.target.dataset.add;
+  if (!add) return;
+  const c = e.target.dataset.kind === 'flag'
+    ? { type: 'flag', key: 'trend_up' }
+    : add === 'entry'
+      ? { type: 'compare', left: { ind: 'rsi', period: 14 }, op: 'lt', right: { ind: 'value', value: 30 } }
+      : { type: 'compare', left: { ind: 'rsi', period: 14 }, op: 'gt', right: { ind: 'value', value: 70 } };
+  $(`#sb-${add}`).insertAdjacentHTML('beforeend', condRow(c));
+  updateSummary();
+});
+
+$('#sb-new').addEventListener('click', () => loadDefinition({ name: '', entry: { mode: 'all', conditions: [{ type: 'compare', left: { ind: 'close' }, op: 'crossAbove', right: { ind: 'ema', period: 50 } }] }, exit: { mode: 'any', conditions: [] } }));
+$('#sb-template').addEventListener('change', (e) => {
+  if (e.target.value === '') return;
+  loadDefinition(state.schema.templates[Number(e.target.value)]);
+  e.target.value = '';
+  toast('Plantilla cargada. Modifícala a tu gusto y guárdala.');
+});
+
+$('#sb-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('#sb-error').textContent = '';
+  const body = { definition: readDefinition(), public: $('#sb-form').public.checked };
+  try {
+    const saved = state.sbId
+      ? await api('/custom-strategies/' + state.sbId, { method: 'PUT', body })
+      : await api('/custom-strategies', { method: 'POST', body });
+    state.sbId = saved.id;
+    await loadCustom();
+    loadDefinition(saved.definition, { id: saved.id, isPublic: saved.public });
+    $('#sb-status').textContent = '✔ Guardada';
+    toast('Estrategia guardada. Ya puedes usarla en Backtesting y Bots.');
+  } catch (err) {
+    $('#sb-error').textContent = err.message;
+  }
+});
+
+// Usa la estrategia del editor (aunque no esté guardada) en el backtest o en un bot.
+function useDraft(prefix) {
+  const def = readDefinition();
+  if (!def.name) def.name = 'Sin nombre';
+  if (!def.entry.conditions.length) {
+    $('#sb-error').textContent = 'Añade al menos una condición de compra';
+    return false;
+  }
+  state.draft = def;
+  const value = state.sbId ? 'custom:' + state.sbId : 'draft';
+  // Si está guardada pero con cambios, se usa el borrador.
+  const saved = state.sbId && customById(state.sbId);
+  const useSaved = saved && JSON.stringify(saved.definition) === JSON.stringify({ ...def, description: def.description });
+  for (const p of ['bt', 'bot']) fillStrategySelect(p, useSaved ? value : 'draft');
+  if (prefix === 'bot') setBotType('signal');
+  return true;
+}
+$('#sb-test').addEventListener('click', () => {
+  if (!useDraft('bt')) return;
+  showView('backtest');
+  $('#bt-form').requestSubmit();
+});
+$('#sb-bot').addEventListener('click', () => {
+  if (!useDraft('bot')) return;
+  showView('bots');
+  toast('Elige el par, la temporalidad y el monto, y pulsa «Activar bot»');
+});
+$('#sb-delete').addEventListener('click', async () => {
+  if (!state.sbId || !confirm('¿Eliminar esta estrategia? Los bots que ya la usan seguirán funcionando con su copia.')) return;
+  await api('/custom-strategies/' + state.sbId, { method: 'DELETE' });
+  await loadCustom();
+  $('#sb-new').click();
+});
+
+function renderStrategyLists() {
+  $('#sb-mine').innerHTML = state.custom.mine.length
+    ? state.custom.mine.map((s) => `<div class="sb-item${s.id === state.sbId ? ' sel' : ''}" data-open="${s.id}">
+        <strong>${esc(s.name)}</strong> ${s.public ? '<span class="pill buy">Compartida</span>' : ''}
+        <div class="meta">${esc(describeDefinition(s.definition)).slice(0, 140)}</div></div>`).join('')
+    : '<p class="muted small">Todavía no tienes estrategias. Crea una nueva o empieza desde una plantilla.</p>';
+  $('#sb-community').innerHTML = state.custom.community.length
+    ? state.custom.community.map((s) => `<div class="sb-item">
+        <strong>${esc(s.name)}</strong> <span class="muted small">por ${esc(s.author)}</span>
+        <div class="meta">${esc(s.definition.description || describeDefinition(s.definition)).slice(0, 140)}</div>
+        <div class="acts"><button type="button" data-copy="${s.id}">📋 Copiar a las mías</button><button type="button" data-try="${s.id}">▶ Backtest</button></div></div>`).join('')
+    : '<p class="muted small">Nadie ha compartido estrategias todavía. ¡Sé el primero!</p>';
+}
+
+$('#view-builder').addEventListener('click', async (e) => {
+  const t = e.target;
+  const item = t.closest('[data-open]');
+  if (item) return openCustom(Number(item.dataset.open));
+  if (t.dataset.copy) {
+    const s = await api(`/custom-strategies/${t.dataset.copy}/copy`, { method: 'POST' });
+    await loadCustom();
+    loadDefinition(s.definition, { id: s.id });
+    toast('Copiada a «Mis estrategias»');
+  }
+  if (t.dataset.try) {
+    fillStrategySelect('bt', 'custom:' + t.dataset.try);
+    showView('backtest');
+    $('#bt-form').requestSubmit();
+  }
+});
 
 // ---------- Backtesting ----------
 const btChart = new Charts.CandleChart($('#bt-chart'));
@@ -648,11 +915,15 @@ $('#bt-form').addEventListener('submit', async (e) => {
       method: 'POST',
       body: {
         symbol: f.symbol.value, timeframe: f.timeframe.value, limit: Number(f.limit.value),
-        strategy: f.strategy.value, params: readParams('bt'),
-        stopLoss: Number(f.stopLoss.value), takeProfit: Number(f.takeProfit.value), positionPct: Number(f.positionPct.value),
+        ...strategyPayload('bt'),
+        stopLoss: Number(f.stopLoss.value), takeProfit: Number(f.takeProfit.value),
+        trailing: Number(f.trailing.value), positionPct: Number(f.positionPct.value),
       },
     });
-    state.bt.request = { symbol: f.symbol.value, timeframe: f.timeframe.value, stopLoss: f.stopLoss.value, takeProfit: f.takeProfit.value };
+    state.bt.request = {
+      symbol: f.symbol.value, timeframe: f.timeframe.value, strategyValue: f.strategy.value,
+      stopLoss: f.stopLoss.value, takeProfit: f.takeProfit.value, trailing: f.trailing.value,
+    };
     renderBacktest();
   } catch (err) {
     $('#bt-error').textContent = err.message;
@@ -723,88 +994,230 @@ function drawBacktest() {
 $('#bt-to-bot').addEventListener('click', () => {
   const r = state.bt;
   const f = $('#bot-form');
+  setBotType('signal');
   f.symbol.value = r.request.symbol;
   f.timeframe.value = r.request.timeframe;
-  f.strategy.value = r.strategy.id;
+  fillStrategySelect('bot', r.request.strategyValue);
+  renderParams('bot', r.strategy.params);
   f.stopLoss.value = r.request.stopLoss;
   f.takeProfit.value = r.request.takeProfit;
-  renderParams('bot', r.strategy.params);
+  f.trailing.value = r.request.trailing;
   showView('bots');
   toast('Revisa el monto por operación y pulsa «Activar bot»');
 });
 
 // ---------- Bots ----------
+const BOT_TYPES = {
+  signal: 'Opera según una estrategia (predefinida o creada en «Estrategias»): al cerrar cada vela evalúa las reglas y compra o vende.',
+  dca: 'Compra una cantidad fija cada cierto tiempo (Dollar Cost Averaging). Puede comprar extra en las caídas y vender todo al alcanzar el take-profit sobre el precio medio.',
+  grid: 'Reparte la inversión en niveles dentro de un rango: compra cada vez que el precio baja un nivel y vende al subir al siguiente. Ideal para mercados laterales.',
+};
+state.botType = 'signal';
+state.botPanels = {}; // id -> 'edit' | 'log'
+
+function setBotType(type) {
+  state.botType = type;
+  $$('[data-bot-type]').forEach((b) => b.classList.toggle('active', b.dataset.botType === type));
+  $$('#bot-form [data-for]').forEach((el) => el.classList.toggle('hidden', !el.dataset.for.split(' ').includes(type)));
+  $('#bot-type-desc').textContent = BOT_TYPES[type];
+  if (type === 'grid') prefillGrid();
+}
+$$('[data-bot-type]').forEach((b) => b.addEventListener('click', () => setBotType(b.dataset.botType)));
+
+function prefillGrid(force = false) {
+  const f = $('#bot-form');
+  const p = state.tickers[f.symbol.value]?.last;
+  if (!p) return;
+  if (force || !f.low.value) f.low.value = fmtAxis(p * 0.9);
+  if (force || !f.high.value) f.high.value = fmtAxis(p * 1.1);
+  gridHint();
+}
+
+function gridHint() {
+  const f = $('#bot-form');
+  const low = Number(f.low.value), high = Number(f.high.value), n = Number(f.grids.value), inv = Number(f.investment.value);
+  if (!(low > 0 && high > low && n >= 2)) { $('#grid-hint').textContent = ''; return; }
+  const stepPct = ((high - low) / n / low) * 100;
+  const fee = feeOf(f.symbol.value) * 200;
+  const p = state.tickers[f.symbol.value]?.last;
+  $('#grid-hint').textContent = `Cada nivel: ${usd(inv / n)} · separación ≈ ${stepPct.toFixed(2)} % · ganancia por nivel ≈ ${(stepPct - fee).toFixed(2)} % tras comisiones.` +
+    (p && (p < low || p > high) ? ' ⚠️ El precio actual está fuera del rango.' : '');
+}
+$('#bot-form').symbol.addEventListener('change', () => state.botType === 'grid' && prefillGrid(true));
+for (const k of ['low', 'high', 'grids', 'investment']) $('#bot-form')[k].addEventListener('input', gridHint);
+
 $('#bot-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const f = e.target;
   $('#bot-error').textContent = '';
-  try {
-    await api('/bots', {
-      method: 'POST',
-      body: {
-        symbol: f.symbol.value, timeframe: f.timeframe.value, strategy: f.strategy.value, params: readParams('bot'),
-        amount: Number(f.amount.value), stopLoss: Number(f.stopLoss.value), takeProfit: Number(f.takeProfit.value),
-      },
+  const type = state.botType;
+  const body = { type, name: f.name.value, symbol: f.symbol.value, stopLoss: Number(f.stopLoss.value) };
+  if (type === 'signal') {
+    Object.assign(body, strategyPayload('bot'), {
+      timeframe: f.timeframe.value, amount: Number(f.amount.value),
+      takeProfit: Number(f.takeProfit.value), trailing: Number(f.trailing.value),
     });
-    toast('🤖 Bot activado. Evaluará la estrategia al cierre de cada vela.');
-    loadBots();
+  } else if (type === 'dca') {
+    Object.assign(body, {
+      amount: Number(f.amount.value), intervalHours: Number(f.intervalHours.value),
+      dropPct: Number(f.dropPct.value), maxBuys: Number(f.maxBuys.value), takeProfit: Number(f.takeProfit.value),
+    });
+  } else {
+    Object.assign(body, { low: Number(f.low.value), high: Number(f.high.value), grids: Number(f.grids.value), investment: Number(f.investment.value) });
+  }
+  try {
+    await api('/bots', { method: 'POST', body });
+    toast('🤖 Bot activado');
+    f.name.value = '';
+    await Promise.all([loadBots(true), loadMe()]);
   } catch (err) {
     $('#bot-error').textContent = err.message;
   }
 });
 
-async function loadBots() {
+const TF_NAME = { '1m': '1 minuto', '5m': '5 minutos', '15m': '15 minutos', '1h': '1 hora', '4h': '4 horas', '1d': '1 día' };
+const TYPE_BADGE = { signal: '🧠 Señales', dca: '📅 DCA', grid: '🔲 Grid' };
+
+function botDetails(b) {
+  const pos = b.qty > 0
+    ? `${num(b.qty)} ${esc(base(b.symbol))} · medio ${px(b.entry_price)} <span class="${cls(b.unrealized)}">(${usd(b.unrealized)})</span>`
+    : 'Sin posición';
+  const risk = [b.stop_loss ? `SL ${b.stop_loss} %` : '', b.take_profit && b.type !== 'grid' ? `TP ${b.take_profit} %` : '', b.trailing ? `Trailing ${b.trailing} %` : ''].filter(Boolean).join(' · ') || '—';
+  let rows = '';
+  if (b.type === 'signal') {
+    const params = b.strategy === 'custom' ? describeDefinition(b.params.definition) : Object.entries(b.params).map(([k, v]) => `${k}=${v}`).join(', ');
+    rows = `<dt>Estrategia</dt><dd>${esc(b.strategyName)} · velas de ${TF_NAME[b.timeframe]}</dd>
+      <dt>Reglas</dt><dd>${esc(params)}</dd>
+      <dt>Por operación</dt><dd>${usd(b.amount)}</dd>`;
+  } else if (b.type === 'dca') {
+    const c = b.config, st = c.state || {};
+    const next = st.lastBuyAt ? Math.max(0, st.lastBuyAt + c.intervalHours * 3600e3 - Date.now()) : 0;
+    rows = `<dt>Plan</dt><dd>${usd(b.amount)} cada ${c.intervalHours} h${c.dropPct ? ` · extra si cae ${c.dropPct} %` : ''}${c.maxBuys ? ` · máx. ${c.maxBuys} compras` : ''}</dd>
+      <dt>Ciclo actual</dt><dd>${st.buys || 0} compras · invertido ${usd(st.cost || 0)}</dd>
+      <dt>Próxima compra</dt><dd>${c.maxBuys && st.buys >= c.maxBuys ? 'Límite alcanzado' : next ? `en ${fmtDuration(Math.ceil(next / 60000))}` : 'en breve'}</dd>`;
+  } else {
+    const c = b.config;
+    const cells = (c.cells || []).map((x) => `<span class="${x.state}" title="${x.state === 'sell' ? 'Comprado, esperando para vender' : 'Esperando para comprar'}"></span>`).join('');
+    rows = `<dt>Rango</dt><dd>${px(c.low)} – ${px(c.high)} · ${c.grids} niveles de ${usd(c.investment / c.grids)}</dd>
+      <dt>Niveles</dt><dd><div class="grid-cells">${cells}</div><span class="muted small">verde = comprado, esperando para vender</span></dd>`;
+  }
+  return `${rows}
+    <dt>Riesgo</dt><dd>${risk}</dd>
+    <dt>Posición</dt><dd>${pos}</dd>
+    <dt>G/P realizada</dt><dd class="${cls(b.realized)}">${usd(b.realized)} · ${b.trade_count} operaciones</dd>
+    <dt>Último evento</dt><dd>${esc(b.last_event || '—')}</dd>`;
+}
+
+function botEditForm(b) {
+  const field = (label, name, value, extra = '') => `<label>${label} <input name="${name}" value="${esc(value ?? '')}" ${extra}></label>`;
+  let html = field('Nombre', 'name', b.name ?? '', 'maxlength="40"') + field('Stop-loss %', 'stopLoss', b.stop_loss, 'type="number" step="any" min="0"');
+  if (b.type !== 'grid') html += field(b.type === 'dca' ? 'USD por compra' : 'USD por operación', 'amount', b.amount, 'type="number" step="any" min="1"') + field('Take-profit %', 'takeProfit', b.take_profit, 'type="number" step="any" min="0"');
+  if (b.type === 'signal') {
+    html += field('Trailing stop %', 'trailing', b.trailing, 'type="number" step="any" min="0"');
+    html += `<label>Temporalidad <select name="timeframe">${Object.keys(TF_NAME).map((t) => `<option${t === b.timeframe ? ' selected' : ''}>${t}</option>`).join('')}</select></label>`;
+    if (b.strategy !== 'custom') {
+      const st = state.strategies.find((x) => x.id === b.strategy);
+      html += (st?.params || []).map((p) => field(esc(p.label), 'p:' + p.key, b.params[p.key], `type="number" step="${p.step ?? 1}" min="${p.min}" max="${p.max}"`)).join('');
+    }
+  }
+  if (b.type === 'dca') {
+    html += field('Cada (horas)', 'intervalHours', b.config.intervalHours, 'type="number" step="any" min="0.1"')
+      + field('Extra si cae %', 'dropPct', b.config.dropPct, 'type="number" step="any" min="0"')
+      + field('Máx. compras', 'maxBuys', b.config.maxBuys, 'type="number" min="0"');
+  }
+  if (b.type === 'grid') html += '<p class="hint" style="grid-column:1/-1">El rango y los niveles de un grid no se pueden cambiar en marcha: elimínalo y crea otro.</p>';
+  return `<form class="edit" data-edit-form="${b.id}">${html}
+    <div class="btn-row"><button type="submit" class="primary">Guardar cambios</button><button type="button" data-bot-panel="${b.id}" data-panel="">Cancelar</button></div>
+    <p class="error" style="grid-column:1/-1"></p></form>`;
+}
+
+async function botLog(id) {
+  const [events, trades] = await Promise.all([api(`/bots/${id}/events`), api(`/bots/${id}/trades`)]);
+  const el = document.querySelector(`[data-log="${id}"]`);
+  if (!el) return;
+  el.innerHTML = `<strong>Registro</strong>` + (events.map((e) => `<div><time>${date(e.created_at)}</time>${esc(e.message)}</div>`).join('') || '<div class="muted">Sin eventos</div>')
+    + `<strong class="mt" style="display:block">Operaciones del bot</strong>` + (trades.map((t) => `<div><time>${date(t.created_at)}</time><span class="pill ${t.side}">${t.side === 'buy' ? 'Compra' : 'Venta'}</span> ${num(t.qty)} a ${px(t.price)}</div>`).join('') || '<div class="muted">Sin operaciones</div>');
+}
+
+async function loadBots(force = false) {
+  // No se repinta mientras el usuario edita un bot, para no perder lo que escribe.
+  if (!force && Object.values(state.botPanels).includes('edit')) return;
   const bots = await api('/bots');
-  const tfName = { '1m': '1 minuto', '5m': '5 minutos', '15m': '15 minutos', '1h': '1 hora', '4h': '4 horas', '1d': '1 día' };
+  state.bots = bots;
   $('#bots-list').innerHTML = bots.length
     ? bots.map((b) => {
-        const params = Object.entries(b.params).map(([k, v]) => `${k}=${v}`).join(', ');
-        const pos = b.qty > 0
-          ? `${num(b.qty)} ${esc(base(b.symbol))} a ${px(b.entry_price)} <span class="${cls(b.unrealized)}">(${usd(b.unrealized)})</span>`
-          : 'Sin posición';
+        const panel = state.botPanels[b.id];
         return `<div class="bot">
           <div class="bot-head">
-            <div><strong>#${b.id} ${esc(b.strategyName)}</strong> <span class="muted">· ${esc(b.symbol)} · velas de ${tfName[b.timeframe]}</span>
+            <div><span class="type-badge">${TYPE_BADGE[b.type]}</span><strong>#${b.id} ${esc(b.name || b.strategyName)}</strong> <span class="muted">· ${esc(b.symbol)}</span>
               <span class="status ${b.active ? 'on' : 'off'}">${b.active ? '● Activo' : '❚❚ Pausado'}</span></div>
             <div class="actions">
               <button data-bot-toggle="${b.id}" data-active="${b.active ? 0 : 1}">${b.active ? 'Pausar' : 'Reanudar'}</button>
+              <button data-bot-panel="${b.id}" data-panel="edit">✏️ Editar</button>
+              <button data-bot-panel="${b.id}" data-panel="log">📜 Registro</button>
               <button class="danger" data-bot-del="${b.id}" data-qty="${b.qty}">Eliminar</button>
             </div>
           </div>
-          <dl class="kv">
-            <dt>Parámetros</dt><dd>${esc(params)}</dd>
-            <dt>Por operación</dt><dd>${usd(b.amount)}${b.stop_loss ? ` · SL ${b.stop_loss} %` : ''}${b.take_profit ? ` · TP ${b.take_profit} %` : ''}</dd>
-            <dt>Posición</dt><dd>${pos}</dd>
-            <dt>G/P realizada</dt><dd class="${cls(b.realized)}">${usd(b.realized)} · ${b.trade_count} operaciones</dd>
-            <dt>Último evento</dt><dd>${esc(b.last_event || '—')}</dd>
-            <dt>Última revisión</dt><dd>${b.last_run ? date(b.last_run) : '—'}</dd>
-          </dl>
+          <dl class="kv">${botDetails(b)}</dl>
+          ${panel === 'edit' ? botEditForm(b) : ''}
+          ${panel === 'log' ? `<div class="log" data-log="${b.id}">Cargando…</div>` : ''}
         </div>`;
       }).join('')
-    : '<p class="muted">No tienes bots. Crea uno a la izquierda o desde un backtest que te haya gustado.</p>';
+    : '<p class="muted">No tienes bots. Crea uno a la izquierda, desde un backtest o desde el constructor de estrategias.</p>';
+  for (const [id, p] of Object.entries(state.botPanels)) if (p === 'log') botLog(id);
 }
 
 $('#bots-list').addEventListener('click', async (e) => {
   const t = e.target;
   try {
+    if (t.dataset.botPanel) {
+      const id = t.dataset.botPanel;
+      state.botPanels[id] = t.dataset.panel && state.botPanels[id] !== t.dataset.panel ? t.dataset.panel : undefined;
+      return loadBots(true);
+    }
     if (t.dataset.botToggle) {
       await api('/bots/' + t.dataset.botToggle, { method: 'PATCH', body: { active: t.dataset.active === '1' } });
     } else if (t.dataset.botDel) {
       if (!confirm('¿Eliminar este bot?')) return;
       const close = Number(t.dataset.qty) > 0 && confirm('El bot tiene una posición abierta. ¿Quieres venderla ahora? (Cancelar = conservarla en tu cartera)');
       await api(`/bots/${t.dataset.botDel}${close ? '?close=1' : ''}`, { method: 'DELETE' });
+      delete state.botPanels[t.dataset.botDel];
       await loadMe();
     } else return;
-    loadBots();
+    loadBots(true);
   } catch (err) {
     toast(err.message);
   }
 });
 
+$('#bots-list').addEventListener('submit', async (e) => {
+  const form = e.target.closest('[data-edit-form]');
+  if (!form) return;
+  e.preventDefault();
+  const id = form.dataset.editForm;
+  const body = {};
+  const params = {};
+  for (const el of form.querySelectorAll('input, select')) {
+    if (el.name.startsWith('p:')) params[el.name.slice(2)] = Number(el.value);
+    else body[el.name] = el.type === 'number' ? Number(el.value) : el.value;
+  }
+  if (Object.keys(params).length) body.params = params;
+  try {
+    await api('/bots/' + id, { method: 'PATCH', body });
+    delete state.botPanels[id];
+    toast('Bot actualizado');
+    loadBots(true);
+  } catch (err) {
+    form.querySelector('.error').textContent = err.message;
+  }
+});
+
+const fmtDuration = (m) => (m >= 1440 ? `${Math.floor(m / 1440)} d ${Math.floor((m % 1440) / 60)} h` : m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`);
+
 // ---------- Horarios de mercado ----------
 const FOREX_MARKET = { name: 'Forex (mercado global)', tz: 'America/New_York', forex: true };
 function renderClocks() {
-  const dur = (m) => (m >= 1440 ? `${Math.floor(m / 1440)} d ${Math.floor((m % 1440) / 60)} h` : m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`);
+  const dur = fmtDuration;
   const rows = [FOREX_MARKET, ...Indicators.EXCHANGES].map((ex) => {
     const st = Indicators.marketStatus(ex);
     const label = st.open ? 'Abierta' : st.lunch ? 'Pausa' : 'Cerrada';
@@ -831,6 +1244,7 @@ async function enterApp() {
   await Promise.all([loadTickers(), loadMe(), loadStrategies()]);
   selectSymbol(state.symbol);
   setSide(state.side);
+  setBotType(state.botType);
   renderClocks();
   clearInterval(pollTimer);
   let n = 0;

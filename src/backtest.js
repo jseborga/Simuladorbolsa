@@ -1,17 +1,18 @@
 // Motor de backtesting: prueba una estrategia sobre velas históricas.
 // Reglas (para que sea realista y sin "mirar al futuro"):
 //  - La señal se calcula al CIERRE de una vela y la orden se ejecuta en la APERTURA de la siguiente.
-//  - Stop-loss / take-profit se revisan dentro de cada vela con su mínimo / máximo.
+//  - Stop-loss / take-profit / trailing stop se revisan dentro de cada vela con su mínimo / máximo.
 //  - Sólo posiciones largas (comprar y luego vender), con comisión en cada lado.
-const { getStrategy, normalizeParams } = require('./strategies');
+const { resolve } = require('./strategies');
 
-function backtest(candles, { strategy: id, params, initialCash = 10000, feeRate = 0.001, positionPct = 100, stopLoss = 0, takeProfit = 0 } = {}) {
-  const strategy = getStrategy(id);
-  const p = normalizeParams(strategy, params);
+function backtest(candles, { strategy: id, params, definition, initialCash = 10000, feeRate = 0.001, positionPct = 100, stopLoss = 0, takeProfit = 0, trailing = 0 } = {}) {
+  const { strategy, params: p } = resolve({ strategy: id, params, definition });
   if (candles.length < 10) throw Object.assign(new Error('No hay suficientes velas para el backtest'), { status: 400 });
   const { signals, plots, panels = [], zones = [], segments = [] } = strategy.run(candles, p);
   const sl = Math.max(Number(stopLoss) || 0, 0) / 100;
   const tp = Math.max(Number(takeProfit) || 0, 0) / 100;
+  const tr = Math.min(Math.max(Number(trailing) || 0, 0), 90) / 100;
+  let trailPeak = 0;
   const sizeFrac = Math.min(Math.max(Number(positionPct) || 100, 1), 100) / 100;
 
   let cash = initialCash;
@@ -27,6 +28,7 @@ function backtest(candles, { strategy: id, params, initialCash = 10000, feeRate 
     const fee = qty * price * feeRate;
     cash -= qty * price + fee;
     entry = { i, price, cost: qty * price + fee };
+    trailPeak = price;
     markers.push({ i, side: 'buy', price });
   };
   const sell = (i, price, reason) => {
@@ -53,9 +55,13 @@ function backtest(candles, { strategy: id, params, initialCash = 10000, feeRate 
     if (qty > 0) {
       const slPrice = sl ? entry.price * (1 - sl) : null;
       const tpPrice = tp ? entry.price * (1 + tp) : null;
-      // Si en la misma vela se tocan ambos niveles, asumimos lo peor (stop-loss).
+      // El trailing stop sigue al máximo alcanzado (con el máximo de la vela anterior, para no mirar dentro de la vela).
+      const trPrice = tr ? trailPeak * (1 - tr) : null;
+      // Si en la misma vela se tocan varios niveles, asumimos lo peor (primero los stops).
       if (slPrice && low <= slPrice) sell(i, Math.min(open, slPrice), 'Stop-loss');
+      else if (trPrice && low <= trPrice) sell(i, Math.min(open, trPrice), 'Trailing stop');
       else if (tpPrice && high >= tpPrice) sell(i, Math.max(open, tpPrice), 'Take-profit');
+      if (qty > 0) trailPeak = Math.max(trailPeak, high);
     }
 
     pending = signals[i];
@@ -82,7 +88,7 @@ function backtest(candles, { strategy: id, params, initialCash = 10000, feeRate 
   const barsIn = trades.reduce((a, t) => a + t.bars, 0);
 
   return {
-    strategy: { id: strategy.id, name: strategy.name, params: p },
+    strategy: { id: strategy.id, name: strategy.name, params: p, definition: strategy.definition },
     metrics: {
       initialCash,
       finalEquity,
