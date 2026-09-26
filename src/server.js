@@ -3,8 +3,11 @@ const express = require('express');
 const { openDb } = require('./db');
 const { Market } = require('./market');
 const { Broker, BrokerError } = require('./broker');
+const { BotManager } = require('./bots');
+const { backtest } = require('./backtest');
+const { publicList } = require('./strategies');
 
-function createApp(broker, market) {
+function createApp(broker, market, bots) {
   const app = express();
   app.use(express.json({ limit: '32kb' }));
   app.use(express.static(path.join(__dirname, '..', 'public')));
@@ -29,7 +32,7 @@ function createApp(broker, market) {
   api.get('/ohlcv', async (req, res, next) => {
     try {
       const { symbol, timeframe = '1h', limit = 120 } = req.query;
-      res.json(await market.ohlcv(String(symbol), String(timeframe), Math.min(Number(limit) || 120, 500)));
+      res.json(await market.ohlcv(String(symbol), String(timeframe), Math.min(Number(limit) || 120, 1000)));
     } catch (e) {
       next(e instanceof BrokerError ? e : new BrokerError(e.message, 502));
     }
@@ -69,6 +72,42 @@ function createApp(broker, market) {
     res.json({ ok: true });
   });
 
+  // ---------- Backtesting ----------
+  api.get('/strategies', (req, res) => res.json(publicList()));
+
+  api.post('/backtest', async (req, res) => {
+    const { symbol, timeframe = '1h', limit = 500, strategy, params, stopLoss, takeProfit, positionPct } = req.body ?? {};
+    if (!market.symbols.includes(symbol)) throw new BrokerError('Símbolo no soportado');
+    let candles;
+    try {
+      candles = await market.ohlcv(symbol, String(timeframe), Number(limit) || 500);
+    } catch (e) {
+      throw new BrokerError('No se pudieron obtener datos históricos: ' + e.message, 502);
+    }
+    const result = backtest(candles, {
+      strategy, params, stopLoss, takeProfit, positionPct,
+      initialCash: broker.initialCash, feeRate: broker.feeRate,
+    });
+    res.json({ ...result, candles });
+  });
+
+  // ---------- Bots ----------
+  api.get('/bots', auth, (req, res) => res.json(bots.list(req.user.id)));
+
+  api.post('/bots', auth, (req, res) => {
+    res.status(201).json(bots.create(req.user.id, req.body ?? {}));
+  });
+
+  api.patch('/bots/:id', auth, (req, res) => {
+    bots.setActive(req.user.id, Number(req.params.id), Boolean(req.body?.active));
+    res.json({ ok: true });
+  });
+
+  api.delete('/bots/:id', auth, (req, res) => {
+    bots.remove(req.user.id, Number(req.params.id), { closePosition: req.query.close === '1' });
+    res.json({ ok: true });
+  });
+
   api.get('/leaderboard', (req, res) => res.json(broker.leaderboard()));
 
   app.use('/api', api);
@@ -95,9 +134,11 @@ async function main() {
     initialCash: Number(process.env.INITIAL_CASH) || 10000,
     feeRate: process.env.FEE_RATE !== undefined ? Number(process.env.FEE_RATE) : 0.001,
   });
+  const bots = new BotManager(db, market, broker, { intervalMs: Number(process.env.BOT_INTERVAL_MS) || 20000 });
   await market.start();
   market.on('tick', () => broker.processOrders());
-  createApp(broker, market).listen(port, () => {
+  bots.start();
+  createApp(broker, market, bots).listen(port, () => {
     console.log(`Simulador de trading listo en http://localhost:${port}`);
   });
 }

@@ -36,6 +36,8 @@
         <button class="nav" data-view="portfolio">Mi cartera</button>
         <button class="nav" data-view="orders">Órdenes</button>
         <button class="nav" data-view="history">Historial</button>
+        <button class="nav" data-view="backtest">Backtesting</button>
+        <button class="nav" data-view="bots">Bots</button>
         <button class="nav" data-view="ranking">Ranking</button>
         <button class="nav" data-view="learn">Aprende</button>
       </nav>
@@ -74,7 +76,24 @@
               </div>
             </div>
             <div class="price-line"><span id="chart-price">—</span> <span id="chart-change"></span></div>
-            <canvas id="chart" height="320"></canvas>
+            <div class="toolbar">
+              <span class="muted small">Indicadores:</span>
+              <label class="chk"><input type="checkbox" data-ind="sma20"> SMA 20</label>
+              <label class="chk"><input type="checkbox" data-ind="sma50"> SMA 50</label>
+              <label class="chk"><input type="checkbox" data-ind="ema20"> EMA 20</label>
+              <label class="chk"><input type="checkbox" data-ind="ema200"> EMA 200</label>
+              <label class="chk"><input type="checkbox" data-ind="bb"> Bollinger</label>
+              <label class="chk"><input type="checkbox" data-ind="volume"> Volumen</label>
+              <label class="chk"><input type="checkbox" data-ind="rsi"> RSI</label>
+              <label class="chk"><input type="checkbox" data-ind="macd"> MACD</label>
+            </div>
+            <div class="toolbar">
+              <span class="muted small">Herramientas:</span>
+              <button type="button" class="tool" id="tool-line" title="Haz clic en el gráfico para marcar un soporte o resistencia">✏️ Línea horizontal</button>
+              <button type="button" class="tool" id="tool-clear">🗑️ Borrar líneas</button>
+              <span class="muted small">Pasa el ratón por el gráfico para ver la cruz de precio y los datos de cada vela.</span>
+            </div>
+            <canvas id="chart"></canvas>
           </div>
           <div class="card">
             <h2>Operar</h2>
@@ -152,6 +171,81 @@
         </div>
       </section>
 
+      <!-- Backtesting -->
+      <section class="view hidden" id="view-backtest">
+        <div class="bt-grid">
+          <div class="card">
+            <h2>Probar una estrategia</h2>
+            <p class="muted small">El backtesting simula cómo habría funcionado una estrategia con datos históricos reales. Se empieza con el saldo inicial y la comisión del simulador.</p>
+            <form id="bt-form">
+              <label>Par <select name="symbol"></select></label>
+              <div class="row2">
+                <label>Temporalidad
+                  <select name="timeframe"><option>15m</option><option selected>1h</option><option>4h</option><option>1d</option></select>
+                </label>
+                <label>Velas <input name="limit" type="number" value="500" min="50" max="1000"></label>
+              </div>
+              <label>Estrategia <select name="strategy"></select></label>
+              <p class="hint" id="bt-desc"></p>
+              <div id="bt-params" class="params"></div>
+              <div class="row2">
+                <label>Stop-loss % <input name="stopLoss" type="number" step="any" min="0" value="0"></label>
+                <label>Take-profit % <input name="takeProfit" type="number" step="any" min="0" value="0"></label>
+              </div>
+              <label>% del capital por operación <input name="positionPct" type="number" min="1" max="100" value="100"></label>
+              <button type="submit" class="primary">▶ Ejecutar backtest</button>
+              <p class="error" id="bt-error"></p>
+            </form>
+          </div>
+          <div class="bt-results">
+            <div class="card" id="bt-empty"><p class="muted">Elige una estrategia y pulsa <strong>Ejecutar backtest</strong>. Verás las operaciones en el gráfico, la curva de capital y las estadísticas.</p></div>
+            <div class="card hidden" id="bt-out">
+              <div class="chart-head"><h2 id="bt-title"></h2><button type="button" id="bt-to-bot">🤖 Crear bot con esta estrategia</button></div>
+              <div class="metrics" id="bt-metrics"></div>
+              <p class="muted small" id="bt-verdict"></p>
+              <canvas id="bt-chart"></canvas>
+              <h2 class="mt">Curva de capital</h2>
+              <canvas id="bt-equity"></canvas>
+              <h2 class="mt">Operaciones</h2>
+              <table class="list" id="bt-trades">
+                <thead><tr><th>#</th><th>Entrada</th><th>Salida</th><th class="r">Precio entrada</th><th class="r">Precio salida</th><th class="r">Velas</th><th>Motivo</th><th class="r">G/P</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Bots -->
+      <section class="view hidden" id="view-bots">
+        <div class="bt-grid">
+          <div class="card">
+            <h2>Nuevo bot</h2>
+            <p class="muted small">Un bot opera solo con tu dinero virtual: al cerrar cada vela revisa la estrategia y compra o vende automáticamente. Sólo vende lo que él mismo compró.</p>
+            <form id="bot-form">
+              <label>Par <select name="symbol"></select></label>
+              <label>Temporalidad
+                <select name="timeframe"><option>1m</option><option>5m</option><option selected>15m</option><option>1h</option><option>4h</option><option>1d</option></select>
+              </label>
+              <label>Estrategia <select name="strategy"></select></label>
+              <p class="hint" id="bot-desc"></p>
+              <div id="bot-params" class="params"></div>
+              <label>USD por operación <input name="amount" type="number" step="any" min="1" value="1000"></label>
+              <div class="row2">
+                <label>Stop-loss % <input name="stopLoss" type="number" step="any" min="0" value="0"></label>
+                <label>Take-profit % <input name="takeProfit" type="number" step="any" min="0" value="0"></label>
+              </div>
+              <button type="submit" class="primary">🤖 Activar bot</button>
+              <p class="error" id="bot-error"></p>
+            </form>
+          </div>
+          <div class="card">
+            <h2>Mis bots</h2>
+            <div id="bots-list"></div>
+          </div>
+        </div>
+      </section>
+
       <!-- Ranking -->
       <section class="view hidden" id="view-ranking">
         <div class="card">
@@ -187,12 +281,35 @@
               <li>Arriesgar un 1–2 % del patrimonio por operación es una regla clásica.</li>
               <li>Las criptomonedas son muy volátiles: movimientos del 10 % en un día son normales.</li>
             </ul></details>
+          <details><summary>Indicadores técnicos</summary>
+            <ul>
+              <li><strong>SMA (media móvil simple)</strong>: promedio de los últimos N cierres. Suaviza el precio y muestra la tendencia. SMA 50 y SMA 200 son las más vigiladas.</li>
+              <li><strong>EMA (media exponencial)</strong>: como la SMA pero da más peso a los precios recientes, así que reacciona antes.</li>
+              <li><strong>Bandas de Bollinger</strong>: media de 20 velas ± 2 desviaciones típicas. Bandas anchas = mucha volatilidad; el precio fuera de las bandas es un movimiento extremo.</li>
+              <li><strong>RSI</strong>: oscilador de 0 a 100 que mide la fuerza de las subidas frente a las bajadas. Por encima de 70 se considera «sobrecompra» y por debajo de 30 «sobreventa».</li>
+              <li><strong>MACD</strong>: diferencia entre EMA 12 y EMA 26, con una línea de señal (EMA 9). Cuando el MACD cruza su señal hacia arriba indica impulso alcista.</li>
+              <li><strong>Volumen</strong>: cuánto se negoció. Un movimiento con mucho volumen suele ser más fiable.</li>
+              <li><strong>Soportes y resistencias</strong>: usa la herramienta «Línea horizontal» para marcar precios donde el mercado rebotó antes.</li>
+            </ul></details>
+          <details><summary>Backtesting: probar antes de arriesgar</summary>
+            <p>Un backtest aplica las reglas de una estrategia a datos pasados. En este simulador la señal se calcula al cierre de una vela y se ejecuta en la apertura de la siguiente, con comisiones, para no «hacer trampa» mirando al futuro.</p>
+            <ul>
+              <li>Compara siempre con <strong>Comprar y mantener</strong>: si tu estrategia no lo supera, ¿vale la pena?</li>
+              <li><strong>Máxima caída (drawdown)</strong>: la peor pérdida desde un máximo. ¿Podrías soportarla sin nervios?</li>
+              <li><strong>Factor de beneficio</strong>: ganancias totales ÷ pérdidas totales. Mayor que 1 es rentable.</li>
+              <li>Cuidado con el <em>sobreajuste</em>: si ajustas los parámetros hasta que el pasado sale perfecto, probablemente falle en el futuro. Prueba la misma configuración en otros pares y periodos.</li>
+            </ul></details>
+          <details><summary>Bots de trading</summary>
+            <p>Un bot sigue las reglas sin emociones, las 24 horas. Crea uno con la estrategia que mejor funcionó en el backtest y compara su resultado real con lo que esperabas. Los bots sólo funcionan mientras el servidor está encendido.</p></details>
           <details><summary>Ejercicios sugeridos</summary>
             <ol>
               <li>Compra 1 000 USD de BTC a mercado y observa cómo cambia tu G/P no realizada.</li>
               <li>Coloca una compra límite de ETH un 2 % por debajo del precio actual y espera a que se ejecute.</li>
               <li>Protege una posición con una venta stop un 5 % por debajo de tu precio medio.</li>
               <li>Crea una cartera diversificada con 4 activos y compárala en el ranking con tus compañeros.</li>
+              <li>Haz un backtest del cruce SMA 10/30 en BTC 1h. Luego prueba 20/50. ¿Cuál tiene menor drawdown?</li>
+              <li>Añade un stop-loss del 3 % al backtest del RSI. ¿Mejora o empeora el resultado?</li>
+              <li>Activa un bot con 500 USD y revisa en unos días si se comportó como en el backtest.</li>
             </ol></details>
           <p class="muted small">⚠️ Esto es una herramienta educativa. Los resultados simulados no garantizan resultados reales y nada de lo que ves aquí es asesoramiento financiero.</p>
         </div>
@@ -201,6 +318,8 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
+  <script src="indicators.js"></script>
+  <script src="chart.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

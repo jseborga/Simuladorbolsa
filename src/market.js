@@ -117,28 +117,49 @@ class Market extends EventEmitter {
   async ohlcv(symbol, timeframe = '1h', limit = 100) {
     if (!this.symbols.includes(symbol)) throw new Error('Símbolo no soportado');
     if (!TIMEFRAME_MS[timeframe]) throw new Error('Temporalidad no soportada');
+    limit = Math.min(Math.max(Number(limit) || 100, 10), 1000);
+    if (this.mode !== 'live') return this.simCandles(symbol, timeframe).slice(-limit);
     const key = `${symbol}|${timeframe}|${limit}`;
     const cached = this.ohlcvCache.get(key);
     if (cached && Date.now() - cached.at < 30000) return cached.data;
-    let data;
-    if (this.mode === 'live') {
-      data = await this.exchange.fetchOHLCV(symbol, timeframe, undefined, limit);
-    } else {
-      data = this.fakeCandles(symbol, timeframe, limit);
-    }
+    const data = await this.exchange.fetchOHLCV(symbol, timeframe, undefined, limit);
     this.ohlcvCache.set(key, { at: Date.now(), data });
     return data;
   }
 
-  // Genera velas hacia atrás que terminan en el precio actual.
-  fakeCandles(symbol, timeframe, limit) {
+  // Modo simulado: genera un histórico una sola vez y lo va extendiendo con
+  // los precios simulados, para que gráficos, backtests y bots vean datos coherentes.
+  simCandles(symbol, timeframe) {
+    const key = `${symbol}|${timeframe}`;
     const step = TIMEFRAME_MS[timeframe];
+    const price = this.price(symbol);
+    const now = Math.floor(Date.now() / step) * step;
+    let data = this.ohlcvCache.get(key);
+    if (!data) {
+      data = this.fakeCandles(price, step, 1000, now);
+      this.ohlcvCache.set(key, data);
+    }
+    let last = data[data.length - 1];
+    while (last[0] < now) {
+      last = [last[0] + step, last[4], last[4], last[4], last[4], 0];
+      data.push(last);
+    }
+    if (data.length > 1200) data.splice(0, data.length - 1000);
+    last[4] = price;
+    last[2] = Math.max(last[2], price);
+    last[3] = Math.min(last[3], price);
+    last[5] += Math.random() * 5;
+    return data.map((c) => c.slice());
+  }
+
+  // Paseo aleatorio hacia atrás que termina en el precio actual.
+  fakeCandles(close, step, limit, end) {
     const vol = 0.01 * Math.sqrt(step / 3600e3);
-    let close = this.price(symbol);
-    const end = Math.floor(Date.now() / step) * step;
     const out = [];
+    let trend = 0;
     for (let i = 0; i < limit; i++) {
-      const open = close / (1 + (Math.random() - 0.5) * 2 * vol);
+      if (i % 40 === 0) trend = (Math.random() - 0.5) * vol * 0.6; // tramos con tendencia
+      const open = close / (1 + trend + (Math.random() - 0.5) * 2 * vol);
       const high = Math.max(open, close) * (1 + Math.random() * vol / 2);
       const low = Math.min(open, close) * (1 - Math.random() * vol / 2);
       out.unshift([end - i * step, open, high, low, close, Math.random() * 100]);

@@ -112,3 +112,32 @@ table.list td { padding: 7px 6px; border-bottom: 1px solid var(--border); white-
 .learn p, .learn li { line-height: 1.55; color: #c9d4df; }
 
 .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--accent); padding: 10px 16px; border-radius: 10px; box-shadow: 0 6px 24px rgba(0,0,0,.4); max-width: calc(100% - 32px); }
+
+/* Barra de indicadores y herramientas */
+.toolbar { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; margin: 4px 0 8px; }
+.chk { display: inline-flex; align-items: center; gap: 4px; margin: 0; color: var(--text); font-size: 12px; cursor: pointer; }
+.chk input { width: auto; margin: 0; }
+.tool { padding: 3px 8px; font-size: 12px; background: transparent; }
+.tool.active { border-color: var(--warn); color: var(--warn); }
+canvas { width: 100%; display: block; }
+
+/* Backtesting y bots */
+.bt-grid { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 12px; align-items: start; }
+@media (max-width: 900px) { .bt-grid { grid-template-columns: 1fr; } }
+.bt-results { display: grid; gap: 12px; min-width: 0; }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.params { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8px; }
+.mt { margin-top: 20px; }
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin: 12px 0; }
+.metric { background: var(--panel-2); border-radius: 8px; padding: 8px 10px; }
+.metric span { display: block; font-size: 11px; color: var(--muted); }
+.metric strong { font-size: 16px; font-variant-numeric: tabular-nums; }
+.bot { border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 10px; }
+.bot-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.bot-head .actions { display: flex; gap: 6px; }
+.bot-head .actions button { padding: 4px 10px; font-size: 12px; }
+.bot .kv { margin: 8px 0 0; font-size: 13px; grid-template-columns: max-content 1fr max-content 1fr; }
+@media (max-width: 600px) { .bot .kv { grid-template-columns: max-content 1fr; } }
+.status { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid; }
+.status.on { color: var(--up); }
+.status.off { color: var(--muted); }

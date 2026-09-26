@@ -44,6 +44,7 @@ function openDb(file) {
       fee         REAL NOT NULL,
       realized    REAL NOT NULL DEFAULT 0,
       order_id    INTEGER,
+      bot_id      INTEGER,
       created_at  TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -61,9 +62,34 @@ function openDb(file) {
       closed_at   TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS bots (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      symbol        TEXT NOT NULL,
+      timeframe     TEXT NOT NULL,
+      strategy      TEXT NOT NULL,
+      params        TEXT NOT NULL,
+      amount        REAL NOT NULL,
+      stop_loss     REAL NOT NULL DEFAULT 0,
+      take_profit   REAL NOT NULL DEFAULT 0,
+      active        INTEGER NOT NULL DEFAULT 1,
+      qty           REAL NOT NULL DEFAULT 0,
+      entry_price   REAL,
+      realized      REAL NOT NULL DEFAULT 0,
+      trade_count   INTEGER NOT NULL DEFAULT 0,
+      last_candle   INTEGER,
+      last_signal   TEXT,
+      last_event    TEXT,
+      last_run      TEXT,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_trades_user ON trades(user_id, id DESC);
     CREATE INDEX IF NOT EXISTS idx_orders_open ON orders(status, symbol);
   `);
+  // Migración para bases de datos creadas con la versión anterior.
+  const cols = db.prepare('PRAGMA table_info(trades)').all().map((c) => c.name);
+  if (!cols.includes('bot_id')) db.exec('ALTER TABLE trades ADD COLUMN bot_id INTEGER');
   return db;
 }
 

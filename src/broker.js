@@ -77,6 +77,7 @@ class Broker {
       this.db.prepare('DELETE FROM holdings WHERE user_id = ?').run(userId);
       this.db.prepare('DELETE FROM trades WHERE user_id = ?').run(userId);
       this.db.prepare('DELETE FROM orders WHERE user_id = ?').run(userId);
+      this.db.prepare('DELETE FROM bots WHERE user_id = ?').run(userId);
       this.db.prepare('UPDATE users SET cash = initial_cash WHERE id = ?').run(userId);
     });
   }
@@ -98,14 +99,14 @@ class Broker {
   }
 
   // Orden a mercado: se ejecuta de inmediato al mejor precio (ask para comprar, bid para vender).
-  marketOrder(userId, symbol, side, qty) {
+  marketOrder(userId, symbol, side, qty, { botId = null } = {}) {
     qty = this.validate(symbol, side, qty);
     const price = this.quote(symbol, side);
-    return tx(this.db, () => this.fill(userId, symbol, side, qty, price, null));
+    return tx(this.db, () => this.fill(userId, symbol, side, qty, price, null, botId));
   }
 
   // Ejecuta una operación dentro de una transacción ya abierta.
-  fill(userId, symbol, side, qty, price, orderId) {
+  fill(userId, symbol, side, qty, price, orderId, botId = null) {
     const notional = qty * price;
     if (notional < this.minNotional) throw new BrokerError(`El monto mínimo por operación es $${this.minNotional}`);
     const fee = notional * this.feeRate;
@@ -142,8 +143,8 @@ class Broker {
     }
 
     const r = this.db
-      .prepare('INSERT INTO trades (user_id, symbol, side, qty, price, fee, realized, order_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(userId, symbol, side, qty, price, fee, realized, orderId);
+      .prepare('INSERT INTO trades (user_id, symbol, side, qty, price, fee, realized, order_id, bot_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(userId, symbol, side, qty, price, fee, realized, orderId, botId);
     return { id: Number(r.lastInsertRowid), symbol, side, qty, price, fee, realized };
   }
 

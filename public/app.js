@@ -102,6 +102,8 @@ function showView(v) {
   if (v === 'history') loadTrades();
   if (v === 'ranking') loadRanking();
   if (v === 'market') drawChart();
+  if (v === 'backtest' && state.bt) drawBacktest();
+  if (v === 'bots') loadBots();
 }
 
 // ---------- Datos ----------
@@ -132,7 +134,7 @@ async function loadMe() {
 
 async function loadCandles() {
   try {
-    state.candles = await api(`/ohlcv?symbol=${encodeURIComponent(state.symbol)}&timeframe=${state.timeframe}&limit=120`);
+    state.candles = await api(`/ohlcv?symbol=${encodeURIComponent(state.symbol)}&timeframe=${state.timeframe}&limit=300`);
   } catch (e) {
     state.candles = [];
     toast('No se pudo cargar el gráfico: ' + e.message);
@@ -176,7 +178,7 @@ async function loadTrades() {
     ? trades
         .map(
           (t) => `<tr>
-        <td>${date(t.created_at)}</td><td>${esc(t.symbol)}</td>
+        <td>${date(t.created_at)}</td><td>${esc(t.symbol)}${t.bot_id ? ` <span title="Operación del bot #${t.bot_id}">🤖</span>` : ""}</td>
         <td><span class="pill ${t.side}">${t.side === 'buy' ? 'Compra' : 'Venta'}</span></td>
         <td class="r">${num(t.qty)}</td><td class="r">${px(t.price)}</td><td class="r">${usd(t.qty * t.price)}</td>
         <td class="r">${usd(t.fee)}</td>
@@ -291,80 +293,74 @@ $$('[data-tf]').forEach((b) =>
   })
 );
 
-// ---------- Gráfico de velas (canvas) ----------
-function drawChart() {
-  const cv = $('#chart');
-  if (!cv || cv.offsetParent === null) return;
-  const dpr = window.devicePixelRatio || 1;
-  const W = cv.clientWidth;
-  const H = 320;
-  cv.width = W * dpr;
-  cv.height = H * dpr;
-  const g = cv.getContext('2d');
-  g.scale(dpr, dpr);
-  g.clearRect(0, 0, W, H);
-  const data = state.candles;
-  if (!data.length) {
-    g.fillStyle = '#8b98a8';
-    g.fillText('Cargando gráfico…', 12, 20);
-    return;
-  }
-  const padR = 70, padB = 22, padT = 8;
-  const lows = data.map((c) => c[3]);
-  const highs = data.map((c) => c[2]);
-  const holding = state.me?.holdings.find((h) => h.symbol === state.symbol);
-  let min = Math.min(...lows), max = Math.max(...highs);
-  const range = max - min || max * 0.01;
-  min -= range * 0.05;
-  max += range * 0.05;
-  const y = (p) => padT + (1 - (p - min) / (max - min)) * (H - padT - padB);
-  const cw = (W - padR) / data.length;
+// ---------- Gráfico de velas con indicadores ----------
+const store = {
+  get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* sin almacenamiento */ } },
+};
+const fmtAxis = Charts.fmt;
+state.indicators = store.get('indicators', { volume: true, sma20: true });
+state.lines = store.get('lines', {}); // símbolo -> [precios]
 
-  // Rejilla y eje de precios
-  g.font = '11px system-ui';
-  g.strokeStyle = '#2a3542';
-  g.fillStyle = '#8b98a8';
-  g.lineWidth = 1;
-  for (let i = 0; i <= 5; i++) {
-    const p = min + ((max - min) * i) / 5;
-    const yy = Math.round(y(p)) + 0.5;
-    g.beginPath(); g.moveTo(0, yy); g.lineTo(W - padR, yy); g.stroke();
-    g.fillText(fmtAxis(p), W - padR + 6, yy + 4);
-  }
-  // Eje de tiempo
-  const step = Math.ceil(data.length / 6);
-  for (let i = 0; i < data.length; i += step) {
-    const d = new Date(data[i][0]);
-    const label = ['1d', '4h'].includes(state.timeframe) ? d.toLocaleDateString('es', { day: '2-digit', month: 'short' }) : d.toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' });
-    g.fillText(label, i * cw + 2, H - 6);
-  }
-  // Velas
-  data.forEach(([, o, h, l, c], i) => {
-    const x = i * cw + cw / 2;
-    g.strokeStyle = g.fillStyle = c >= o ? '#1fbf75' : '#f0525c';
-    g.beginPath(); g.moveTo(x, y(h)); g.lineTo(x, y(l)); g.stroke();
-    const top = y(Math.max(o, c));
-    g.fillRect(x - Math.max(cw * 0.35, 0.5), top, Math.max(cw * 0.7, 1), Math.max(y(Math.min(o, c)) - top, 1));
+const mainChart = new Charts.CandleChart($('#chart'), {
+  onPriceClick(price) {
+    (state.lines[state.symbol] ||= []).push(price);
+    store.set('lines', state.lines);
+    mainChart.drawMode = false;
+    $('#tool-line').classList.remove('active');
+    drawChart();
+  },
+});
+
+$$('[data-ind]').forEach((cb) => {
+  cb.checked = !!state.indicators[cb.dataset.ind];
+  cb.addEventListener('change', () => {
+    state.indicators[cb.dataset.ind] = cb.checked;
+    store.set('indicators', state.indicators);
+    drawChart();
   });
-  // Precio actual y precio medio de compra
-  const last = state.tickers[state.symbol]?.last;
-  const hline = (p, color, text) => {
-    if (p == null || p < min || p > max) return;
-    const yy = Math.round(y(p)) + 0.5;
-    g.setLineDash([4, 4]); g.strokeStyle = color;
-    g.beginPath(); g.moveTo(0, yy); g.lineTo(W - padR, yy); g.stroke(); g.setLineDash([]);
-    g.fillStyle = color; g.fillRect(W - padR, yy - 9, padR, 18);
-    g.fillStyle = '#0f141b'; g.fillText(text, W - padR + 4, yy + 4);
-  };
-  if (holding) hline(holding.avg_price, '#f5a524', 'Tu media');
-  hline(last, '#4f8cff', fmtAxis(last));
+});
+
+$('#tool-line').addEventListener('click', () => {
+  mainChart.drawMode = !mainChart.drawMode;
+  $('#tool-line').classList.toggle('active', mainChart.drawMode);
+  if (mainChart.drawMode) toast('Haz clic en el gráfico al precio donde quieras la línea');
+  drawChart();
+});
+$('#tool-clear').addEventListener('click', () => {
+  delete state.lines[state.symbol];
+  store.set('lines', state.lines);
+  drawChart();
+});
+
+function drawChart() {
+  const c = state.candles;
+  const cl = c.map((x) => x[4]);
+  const ind = state.indicators;
+  const overlays = [];
+  if (ind.sma20) overlays.push({ label: 'SMA 20', values: Indicators.sma(cl, 20), color: '#f5a524' });
+  if (ind.sma50) overlays.push({ label: 'SMA 50', values: Indicators.sma(cl, 50), color: '#b17cff' });
+  if (ind.ema20) overlays.push({ label: 'EMA 20', values: Indicators.ema(cl, 20), color: '#22c3e6' });
+  if (ind.ema200) overlays.push({ label: 'EMA 200', values: Indicators.ema(cl, 200), color: '#ff7eb6' });
+  let band = null;
+  if (ind.bb) {
+    band = Indicators.bollinger(cl, 20, 2);
+    overlays.push({ label: 'BB sup', values: band.upper, color: '#4f8cff99' }, { label: 'BB inf', values: band.lower, color: '#4f8cff99' });
+  }
+  const holding = state.me?.holdings.find((h) => h.symbol === state.symbol);
+  const hlines = (state.lines[state.symbol] || []).map((p) => ({ price: p, color: '#8b98a8', label: fmtAxis(p), solid: true }));
+  if (holding) hlines.push({ price: holding.avg_price, color: '#f5a524', label: 'Tu media' });
+  hlines.push({ price: state.tickers[state.symbol]?.last, color: '#4f8cff' });
+  mainChart.set({
+    candles: c, overlays, band, hlines, timeframe: state.timeframe, visible: 150,
+    panels: ['volume', 'rsi', 'macd'].filter((k) => ind[k]),
+  });
 }
 
-function fmtAxis(p) {
-  return p >= 1000 ? p.toFixed(0) : p >= 1 ? p.toFixed(2) : p.toPrecision(4);
-}
-
-window.addEventListener('resize', drawChart);
+window.addEventListener('resize', () => {
+  drawChart();
+  if (state.bt) drawBacktest();
+});
 
 // ---------- Formulario de operación ----------
 const form = $('#trade-form');
@@ -479,13 +475,209 @@ $('#reset').addEventListener('click', async () => {
   await loadMe();
 });
 
+// ---------- Estrategias (compartidas por backtesting y bots) ----------
+async function loadStrategies() {
+  if (state.strategies) return;
+  state.strategies = await api('/strategies');
+  for (const f of [$('#bt-form'), $('#bot-form')]) {
+    f.symbol.innerHTML = state.config.symbols.map((x) => `<option>${esc(x)}</option>`).join('');
+    f.strategy.innerHTML = state.strategies.map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join('');
+  }
+  renderParams('bt');
+  renderParams('bot');
+}
+
+function renderParams(prefix, values = {}) {
+  const f = $(`#${prefix}-form`);
+  const st = state.strategies.find((x) => x.id === f.strategy.value);
+  $(`#${prefix}-desc`).textContent = st.description;
+  $(`#${prefix}-params`).innerHTML = st.params
+    .map((p) => `<label>${esc(p.label)} <input type="number" data-param="${p.key}" value="${values[p.key] ?? p.default}" min="${p.min}" max="${p.max}" step="${p.step ?? 1}"></label>`)
+    .join('');
+}
+
+function readParams(prefix) {
+  const out = {};
+  $$(`#${prefix}-params [data-param]`).forEach((i) => (out[i.dataset.param] = Number(i.value)));
+  return out;
+}
+
+$('#bt-form').strategy.addEventListener('change', () => renderParams('bt'));
+$('#bot-form').strategy.addEventListener('change', () => renderParams('bot'));
+
+// ---------- Backtesting ----------
+const btChart = new Charts.CandleChart($('#bt-chart'));
+
+$('#bt-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  const btn = f.querySelector('button[type=submit]');
+  $('#bt-error').textContent = '';
+  btn.disabled = true;
+  btn.textContent = 'Calculando…';
+  try {
+    state.bt = await api('/backtest', {
+      method: 'POST',
+      body: {
+        symbol: f.symbol.value, timeframe: f.timeframe.value, limit: Number(f.limit.value),
+        strategy: f.strategy.value, params: readParams('bt'),
+        stopLoss: Number(f.stopLoss.value), takeProfit: Number(f.takeProfit.value), positionPct: Number(f.positionPct.value),
+      },
+    });
+    state.bt.request = { symbol: f.symbol.value, timeframe: f.timeframe.value, stopLoss: f.stopLoss.value, takeProfit: f.takeProfit.value };
+    renderBacktest();
+  } catch (err) {
+    $('#bt-error').textContent = err.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '▶ Ejecutar backtest';
+  }
+});
+
+function renderBacktest() {
+  const r = state.bt;
+  const m = r.metrics;
+  $('#bt-empty').classList.add('hidden');
+  $('#bt-out').classList.remove('hidden');
+  $('#bt-title').textContent = `${r.strategy.name} · ${r.request.symbol} · ${r.request.timeframe}`;
+  const tile = (label, value, c = '') => `<div class="metric"><span>${label}</span><strong class="${c}">${value}</strong></div>`;
+  $('#bt-metrics').innerHTML = [
+    tile('Resultado de la estrategia', pct(m.totalReturn), cls(m.totalReturn)),
+    tile('Comprar y mantener', pct(m.buyHoldReturn), cls(m.buyHoldReturn)),
+    tile('Capital final', usd(m.finalEquity)),
+    tile('Máxima caída', `-${m.maxDrawdown.toFixed(2)} %`, m.maxDrawdown > 0 ? 'down' : ''),
+    tile('Operaciones', m.trades),
+    tile('% ganadoras', m.trades ? `${m.winRate.toFixed(1)} %` : '—'),
+    tile('Factor de beneficio', m.profitFactor == null ? '∞' : m.profitFactor.toFixed(2)),
+    tile('Media por operación', m.trades ? pct(m.avgTrade) : '—', cls(m.avgTrade)),
+    tile('Mejor / peor', m.trades ? `${pct(m.bestTrade)} / ${pct(m.worstTrade)}` : '—'),
+    tile('Tiempo invertido', `${m.exposure.toFixed(0)} %`),
+  ].join('');
+  const beat = m.totalReturn > m.buyHoldReturn;
+  $('#bt-verdict').textContent =
+    `Periodo: ${new Date(m.from).toLocaleString('es')} → ${new Date(m.to).toLocaleString('es')} (${m.candles} velas). ` +
+    (m.trades === 0 ? 'La estrategia no generó ninguna operación: prueba otros parámetros o más velas. '
+      : beat ? `La estrategia superó a «comprar y mantener» en ${(m.totalReturn - m.buyHoldReturn).toFixed(2)} puntos. `
+      : `La estrategia quedó ${(m.buyHoldReturn - m.totalReturn).toFixed(2)} puntos por debajo de «comprar y mantener». `) +
+    (m.openAtEnd ? 'La última posición seguía abierta y se cerró al final del periodo. ' : '') +
+    'Recuerda: los resultados pasados no garantizan resultados futuros.';
+  $('#bt-trades tbody').innerHTML = r.trades.length
+    ? r.trades.map((t, i) => `<tr><td>${i + 1}</td>
+        <td>${new Date(t.entryTime).toLocaleString('es', { dateStyle: 'short', timeStyle: 'short' })}</td>
+        <td>${new Date(t.exitTime).toLocaleString('es', { dateStyle: 'short', timeStyle: 'short' })}</td>
+        <td class="r">${px(t.entryPrice)}</td><td class="r">${px(t.exitPrice)}</td><td class="r">${t.bars}</td>
+        <td>${esc(t.reason)}</td><td class="r ${cls(t.pnl)}">${usd(t.pnl)} (${pct(t.pnlPct)})</td></tr>`).join('')
+    : '<tr><td colspan="8" class="muted">Sin operaciones.</td></tr>';
+  drawBacktest();
+}
+
+function drawBacktest() {
+  const r = state.bt;
+  btChart.set({
+    candles: r.candles,
+    overlays: r.plots.map((p) => ({ label: p.label, values: p.values })),
+    markers: r.markers,
+    panels: ['volume', ...r.panels],
+    hlines: [],
+    timeframe: r.request.timeframe,
+  });
+  Charts.lineChart($('#bt-equity'), {
+    times: r.candles.map((c) => c[0]),
+    series: [
+      { label: 'Estrategia', values: r.equity, color: '#4f8cff' },
+      { label: 'Comprar y mantener', values: r.buyHold, color: '#8b98a8' },
+    ],
+  });
+}
+
+$('#bt-to-bot').addEventListener('click', () => {
+  const r = state.bt;
+  const f = $('#bot-form');
+  f.symbol.value = r.request.symbol;
+  f.timeframe.value = r.request.timeframe;
+  f.strategy.value = r.strategy.id;
+  f.stopLoss.value = r.request.stopLoss;
+  f.takeProfit.value = r.request.takeProfit;
+  renderParams('bot', r.strategy.params);
+  showView('bots');
+  toast('Revisa el monto por operación y pulsa «Activar bot»');
+});
+
+// ---------- Bots ----------
+$('#bot-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  $('#bot-error').textContent = '';
+  try {
+    await api('/bots', {
+      method: 'POST',
+      body: {
+        symbol: f.symbol.value, timeframe: f.timeframe.value, strategy: f.strategy.value, params: readParams('bot'),
+        amount: Number(f.amount.value), stopLoss: Number(f.stopLoss.value), takeProfit: Number(f.takeProfit.value),
+      },
+    });
+    toast('🤖 Bot activado. Evaluará la estrategia al cierre de cada vela.');
+    loadBots();
+  } catch (err) {
+    $('#bot-error').textContent = err.message;
+  }
+});
+
+async function loadBots() {
+  const bots = await api('/bots');
+  const tfName = { '1m': '1 minuto', '5m': '5 minutos', '15m': '15 minutos', '1h': '1 hora', '4h': '4 horas', '1d': '1 día' };
+  $('#bots-list').innerHTML = bots.length
+    ? bots.map((b) => {
+        const params = Object.entries(b.params).map(([k, v]) => `${k}=${v}`).join(', ');
+        const pos = b.qty > 0
+          ? `${num(b.qty)} ${esc(base(b.symbol))} a ${px(b.entry_price)} <span class="${cls(b.unrealized)}">(${usd(b.unrealized)})</span>`
+          : 'Sin posición';
+        return `<div class="bot">
+          <div class="bot-head">
+            <div><strong>#${b.id} ${esc(b.strategyName)}</strong> <span class="muted">· ${esc(b.symbol)} · velas de ${tfName[b.timeframe]}</span>
+              <span class="status ${b.active ? 'on' : 'off'}">${b.active ? '● Activo' : '❚❚ Pausado'}</span></div>
+            <div class="actions">
+              <button data-bot-toggle="${b.id}" data-active="${b.active ? 0 : 1}">${b.active ? 'Pausar' : 'Reanudar'}</button>
+              <button class="danger" data-bot-del="${b.id}" data-qty="${b.qty}">Eliminar</button>
+            </div>
+          </div>
+          <dl class="kv">
+            <dt>Parámetros</dt><dd>${esc(params)}</dd>
+            <dt>Por operación</dt><dd>${usd(b.amount)}${b.stop_loss ? ` · SL ${b.stop_loss} %` : ''}${b.take_profit ? ` · TP ${b.take_profit} %` : ''}</dd>
+            <dt>Posición</dt><dd>${pos}</dd>
+            <dt>G/P realizada</dt><dd class="${cls(b.realized)}">${usd(b.realized)} · ${b.trade_count} operaciones</dd>
+            <dt>Último evento</dt><dd>${esc(b.last_event || '—')}</dd>
+            <dt>Última revisión</dt><dd>${b.last_run ? date(b.last_run) : '—'}</dd>
+          </dl>
+        </div>`;
+      }).join('')
+    : '<p class="muted">No tienes bots. Crea uno a la izquierda o desde un backtest que te haya gustado.</p>';
+}
+
+$('#bots-list').addEventListener('click', async (e) => {
+  const t = e.target;
+  try {
+    if (t.dataset.botToggle) {
+      await api('/bots/' + t.dataset.botToggle, { method: 'PATCH', body: { active: t.dataset.active === '1' } });
+    } else if (t.dataset.botDel) {
+      if (!confirm('¿Eliminar este bot?')) return;
+      const close = Number(t.dataset.qty) > 0 && confirm('El bot tiene una posición abierta. ¿Quieres venderla ahora? (Cancelar = conservarla en tu cartera)');
+      await api(`/bots/${t.dataset.botDel}${close ? '?close=1' : ''}`, { method: 'DELETE' });
+      await loadMe();
+    } else return;
+    loadBots();
+  } catch (err) {
+    toast(err.message);
+  }
+});
+
 // ---------- Arranque ----------
 let pollTimer;
 async function enterApp() {
   $('#auth').classList.add('hidden');
   $('#app').classList.remove('hidden');
   await loadConfig();
-  await Promise.all([loadTickers(), loadMe()]);
+  await Promise.all([loadTickers(), loadMe(), loadStrategies()]);
   selectSymbol(state.symbol);
   setSide(state.side);
   clearInterval(pollTimer);
@@ -496,6 +688,7 @@ async function enterApp() {
       await Promise.all([loadTickers(), loadMe()]);
       if (state.view === 'market') drawChart();
       if (state.view === 'orders') loadOrders();
+      if (state.view === 'bots') loadBots();
       if (++n % 12 === 0 && state.view === 'market') loadCandles();
     } catch { /* se reintenta en el siguiente ciclo */ }
   }, 5000);
