@@ -7,23 +7,38 @@ Los precios y las velas se obtienen con [CCXT](https://github.com/ccxt/ccxt) (li
 ## Funciones
 
 - **Cuentas de usuario**: registro/inicio de sesión (contraseñas con `scrypt`), cada usuario con su propia cartera.
-- **Mercado en vivo**: 10 criptomonedas (BTC, ETH, SOL, XRP, ADA, DOGE, LTC, DOT, LINK, AVAX) actualizadas cada 5 s.
+- **Mercado en vivo** (actualizado cada 5 s):
+  - **Cripto**: BTC, ETH, SOL, XRP, ADA, DOGE, LTC, DOT, LINK, AVAX.
+  - **Forex**: EUR/USD, GBP/USD, AUD/USD (con valor del pip y tamaño en lotes al operar).
+  - **Oro**: PAXG/USD (token respaldado por oro físico, sigue a XAU/USD).
 - **Gráfico de velas** (5m, 15m, 1h, 4h, 1d) con tu precio medio de compra marcado.
-- **Indicadores técnicos**: SMA 20/50, EMA 20/200, Bandas de Bollinger, Volumen, RSI y MACD (paneles inferiores).
-- **Herramientas de gráfico**: cruz de precio con datos OHLC e indicadores de cada vela, y líneas horizontales para marcar soportes/resistencias (se guardan por par).
+- **Indicadores clásicos**: SMA 20/50, EMA 20/200, Bandas de Bollinger, VWAP diario, Volumen; osciladores RSI, MACD, Estocástico y ATR.
+- **Indicadores ICT / Smart Money**:
+  - Fair Value Gaps (imbalances) alcistas y bajistas, visibles hasta que se rellenan.
+  - Order Blocks (última vela contraria antes de la ruptura de estructura), hasta que se invalidan.
+  - Estructura de mercado: BOS y CHoCH.
+  - Liquidez: máximos/mínimos iguales (EQH/EQL = BSL/SSL) y barridas de liquidez.
+  - Zonas Premium / Discount con el equilibrio del 50 %.
+  - PDH/PDL, PWH/PWL y apertura de medianoche de Nueva York.
+- **Horarios**:
+  - Cajas de las sesiones de Tokio, Londres y Nueva York sobre el gráfico.
+  - Kill zones de ICT (Asia, Londres, Nueva York, cierre de Londres).
+  - Panel «Horarios de mercado» con el estado en tiempo real (abierta / cerrada / pausa de almuerzo y cuánto falta) del forex y de las bolsas de Sídney, Tokio, Hong Kong, Fráncfort, Londres, Nueva York y São Paulo. El horario de verano se maneja automáticamente; los festivos no.
+- **Herramientas de dibujo**: línea horizontal, línea de tendencia (con % de variación), Fibonacci (con zona OTE 62–79 % y extensiones −0,27 / −0,62) y rectángulo de zona. Se guardan por par, con deshacer y borrar todo.
+- **Cruz de precio** con datos OHLC e indicadores de cada vela.
 - **Backtesting**: prueba 6 estrategias con datos históricos reales (hasta 1000 velas), con comisiones, stop-loss, take-profit y tamaño de posición. Muestra las operaciones sobre el gráfico, la curva de capital frente a «comprar y mantener», máxima caída, % de aciertos, factor de beneficio, etc.
 - **Bots de trading**: activa una estrategia para que opere sola con tu dinero virtual al cierre de cada vela (1m a 1d), con stop-loss/take-profit. Sólo vende lo que el propio bot compró. Se puede crear un bot directamente desde un backtest.
 - **Órdenes**:
   - A mercado (compra al *ask*, vende al *bid*, como en un exchange real).
   - Límite (comprar barato / tomar ganancias).
   - Stop (stop-loss o entrada por ruptura).
-- **Comisión** configurable (0,1 % por defecto) para aprender su impacto.
+- **Comisión** configurable por tipo de activo: 0,1 % en cripto, 0,01 % en forex (similar al spread de un bróker) y 0,05 % en oro.
 - **Cartera**: posiciones, precio medio, G/P realizada y no realizada, % de la cartera, comisiones pagadas.
 - **Historial** de operaciones y de órdenes.
 - **Ranking** entre todos los usuarios.
 - **Aprende**: guía con conceptos básicos y ejercicios propuestos.
 - **Reiniciar cuenta** para volver a empezar con otra estrategia.
-- **Estrategias incluidas**: cruce de SMA, cruce de EMA, RSI sobreventa/sobrecompra, cruce MACD, rebote en Bollinger y ruptura de canal Donchian.
+- **Estrategias incluidas**: cruce de SMA, cruce de EMA, RSI sobreventa/sobrecompra, cruce MACD, rebote en Bollinger, ruptura de canal Donchian e **ICT: estructura + Fair Value Gap** (con filtro opcional de kill zones).
 - **Modo simulado**: si ningún exchange responde (sin internet o bloqueo regional), la app sigue funcionando con precios simulados.
 
 ## Requisitos
@@ -54,10 +69,13 @@ npm test
 | `SIMULATED`    | —                           | `1` para forzar precios simulados |
 | `POLL_MS`      | `5000`                      | Intervalo de actualización de precios |
 | `INITIAL_CASH` | `10000`                     | Saldo virtual inicial de cada cuenta |
-| `FEE_RATE`     | `0.001`                     | Comisión por operación (0,1 %) |
+| `FEE_RATE`     | `0.001`                     | Comisión por operación en cripto (0,1 %) |
+| `FEE_RATE_FOREX` | `0.0001`                  | Comisión en forex (0,01 %) |
+| `FEE_RATE_GOLD`  | `0.0005`                  | Comisión en oro (0,05 %) |
 | `BOT_INTERVAL_MS` | `20000`                  | Cada cuánto revisan los bots si cerró una vela |
 
-> Nota: Binance bloquea algunas regiones (error 451); por eso se prueba primero Kraken.
+> Nota: Binance bloquea algunas regiones (error 451); por eso se prueba primero Kraken, que además ofrece los pares de forex y oro.
+> Sólo se operan pares cotizados en USD (el saldo de las cuentas está en USD); por eso no hay USD/JPY ni USD/CAD.
 
 ## Estructura
 
@@ -71,10 +89,10 @@ src/
   bots.js     Bots que ejecutan estrategias en vivo sobre la cuenta virtual
   db.js       Esquema SQLite
 public/
-  indicators.js  Indicadores técnicos (compartidos por navegador y servidor)
-  chart.js    Gráficos en canvas (velas, indicadores, cruz de precio, curva de capital)
+  indicators.js  Indicadores técnicos, ICT y horarios de mercado (compartidos por navegador y servidor)
+  chart.js    Gráficos en canvas (velas, indicadores, zonas, dibujos, cruz de precio, curva de capital)
   app.js, index.html, styles.css  Interfaz web (sin dependencias)
-test/         Tests de órdenes, indicadores, backtesting y bots
+test/         Tests de órdenes, indicadores, ICT, horarios, backtesting y bots
 ```
 
 ## API

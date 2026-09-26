@@ -20,7 +20,9 @@ const state = {
 // ---------- Formato ----------
 const usd = (n) => (n == null || isNaN(n) ? '—' : n.toLocaleString('es', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 // Precios: más decimales para activos baratos (p. ej. DOGE).
-const px = (n) => (n == null || isNaN(n) ? '—' : n.toLocaleString('es', { style: 'currency', currency: 'USD', maximumFractionDigits: n < 1 ? 6 : 2 }));
+const px = (n) => (n == null || isNaN(n) ? '—' : n.toLocaleString('es', { style: 'currency', currency: 'USD', maximumFractionDigits: n < 10 ? 5 : 2 }));
+const feeOf = (s) => state.config.feeRates?.[s] ?? state.config.feeRate;
+const isForex = (s) => state.config?.categories?.[s] === 'Forex';
 const num = (n, d = 8) => (n == null ? '—' : Number(n).toLocaleString('es', { maximumFractionDigits: d }));
 const pct = (n) => (n == null || isNaN(n) ? '—' : `${n >= 0 ? '+' : ''}${n.toFixed(2)} %`);
 const cls = (n) => (n > 0 ? 'up' : n < 0 ? 'down' : '');
@@ -113,7 +115,7 @@ async function loadConfig() {
   const b = $('#source-badge');
   b.textContent = live ? `● En vivo · ${state.config.exchange}` : '● Mercado simulado';
   b.className = 'badge ' + (live ? 'live' : 'sim');
-  $('#fee-text').textContent = `${(state.config.feeRate * 100).toFixed(2)} % del importe`;
+  $('#fee-text').textContent = `${(state.config.feeRate * 100).toFixed(2)} % del importe en cripto; ${((state.config.feeRates?.['EUR/USD'] ?? state.config.feeRate) * 100).toFixed(3)} % en forex, similar al spread de un bróker`;
   $('#auth-bonus').textContent = `Cada cuenta nueva recibe ${usd(state.config.initialCash)} virtuales.`;
   if (!state.symbol) state.symbol = state.config.symbols[0];
 }
@@ -132,10 +134,22 @@ async function loadMe() {
   updatePreview();
 }
 
+let candlesReq = 0;
 async function loadCandles() {
+  // Si el usuario cambia de par o temporalidad mientras carga, se descarta la respuesta vieja.
+  const req = ++candlesReq;
+  const key = `${state.symbol}|${state.timeframe}`;
+  if (state.candlesKey !== key) {
+    state.candles = [];
+    drawChart();
+  }
   try {
-    state.candles = await api(`/ohlcv?symbol=${encodeURIComponent(state.symbol)}&timeframe=${state.timeframe}&limit=300`);
+    const data = await api(`/ohlcv?symbol=${encodeURIComponent(state.symbol)}&timeframe=${state.timeframe}&limit=300`);
+    if (req !== candlesReq) return;
+    state.candles = data;
+    state.candlesKey = key;
   } catch (e) {
+    if (req !== candlesReq) return;
     state.candles = [];
     toast('No se pudo cargar el gráfico: ' + e.message);
   }
@@ -248,11 +262,15 @@ $('#holdings-table').addEventListener('click', (e) => {
 });
 
 function renderTickers() {
+  let lastCat = null;
   const rows = state.config.symbols
     .map((s) => {
       const t = state.tickers[s];
       if (!t) return '';
-      return `<tr data-symbol="${esc(s)}" class="${s === state.symbol ? 'sel' : ''}">
+      const cat = state.config.categories?.[s] || '';
+      const head = cat !== lastCat ? `<tr class="cat"><td colspan="3">${esc(cat)}</td></tr>` : '';
+      lastCat = cat;
+      return head + `<tr data-symbol="${esc(s)}" class="${s === state.symbol ? 'sel' : ''}">
         <td><strong>${esc(base(s))}</strong><span class="muted">/${esc(s.split('/')[1])}</span></td>
         <td class="r">${px(t.last)}</td><td class="r ${cls(t.percentage)}">${pct(t.percentage)}</td></tr>`;
     })
@@ -272,7 +290,7 @@ function selectSymbol(s) {
   $('#base-asset').textContent = `(${base(s)})`;
   $('#trade-form').qty.value = '';
   $('#trade-form').usd.value = '';
-  updatePreview();
+  setSide(state.side);
   loadCandles();
 }
 
@@ -300,38 +318,143 @@ const store = {
 };
 const fmtAxis = Charts.fmt;
 state.indicators = store.get('indicators', { volume: true, sma20: true });
-state.lines = store.get('lines', {}); // símbolo -> [precios]
+// Dibujos por símbolo: { type: 'hline'|'trend'|'fib'|'rect', t1, p1, t2, p2 }
+state.drawings = store.get('drawings', {});
+// Migra las líneas horizontales de la versión anterior.
+for (const [sym, prices] of Object.entries(store.get('lines', {}))) {
+  (state.drawings[sym] ||= []).push(...prices.map((p) => ({ type: 'hline', p1: p })));
+}
+store.set('lines', {});
+store.set('drawings', state.drawings);
+
+const TOOL_HINTS = {
+  hline: 'Haz clic en el precio donde quieras la línea (soporte / resistencia). Clic derecho para cancelar.',
+  trend: 'Clic en el punto inicial y luego en el final de la línea de tendencia. Clic derecho para cancelar.',
+  fib: 'Clic en el inicio del impulso y luego en su final. La zona OTE (62–79 %) queda sombreada. Clic derecho para cancelar.',
+  rect: 'Clic en una esquina y luego en la opuesta para marcar una zona. Clic derecho para cancelar.',
+};
 
 const mainChart = new Charts.CandleChart($('#chart'), {
-  onPriceClick(price) {
-    (state.lines[state.symbol] ||= []).push(price);
-    store.set('lines', state.lines);
-    mainChart.drawMode = false;
-    $('#tool-line').classList.remove('active');
+  onDraw(d) {
+    (state.drawings[state.symbol] ||= []).push(d);
+    store.set('drawings', state.drawings);
     drawChart();
   },
 });
+mainChart.onToolChange = (tool) => {
+  $$('[data-tool]').forEach((b) => b.classList.toggle('active', b.dataset.tool === tool));
+  $('#tool-hint').textContent = tool ? TOOL_HINTS[tool] : 'Pasa el ratón por el gráfico para ver la cruz de precio y los datos de cada vela.';
+};
+$$('[data-tool]').forEach((b) =>
+  b.addEventListener('click', () => mainChart.setTool(mainChart.tool === b.dataset.tool ? null : b.dataset.tool))
+);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && mainChart.tool) mainChart.setTool(null); });
+$('#tool-undo').addEventListener('click', () => {
+  state.drawings[state.symbol]?.pop();
+  store.set('drawings', state.drawings);
+  drawChart();
+});
+$('#tool-clear').addEventListener('click', () => {
+  if (!state.drawings[state.symbol]?.length || !confirm(`¿Borrar todos los dibujos de ${state.symbol}?`)) return;
+  delete state.drawings[state.symbol];
+  store.set('drawings', state.drawings);
+  drawChart();
+});
+
+function updateIndCount() {
+  const n = Object.values(state.indicators).filter(Boolean).length;
+  $('#ind-count').textContent = n ? `(${n})` : '';
+}
 
 $$('[data-ind]').forEach((cb) => {
   cb.checked = !!state.indicators[cb.dataset.ind];
   cb.addEventListener('change', () => {
     state.indicators[cb.dataset.ind] = cb.checked;
     store.set('indicators', state.indicators);
+    updateIndCount();
     drawChart();
   });
 });
+updateIndCount();
+document.addEventListener('click', (e) => {
+  const m = $('#ind-menu');
+  if (m.open && !m.contains(e.target)) m.open = false;
+});
 
-$('#tool-line').addEventListener('click', () => {
-  mainChart.drawMode = !mainChart.drawMode;
-  $('#tool-line').classList.toggle('active', mainChart.drawMode);
-  if (mainChart.drawMode) toast('Haz clic en el gráfico al precio donde quieras la línea');
-  drawChart();
-});
-$('#tool-clear').addEventListener('click', () => {
-  delete state.lines[state.symbol];
-  store.set('lines', state.lines);
-  drawChart();
-});
+// Velas visibles según el ancho del gráfico (~5 px por vela, entre 60 y 150).
+const visibleCount = () => Math.max(60, Math.min(150, Math.floor(($('#chart').clientWidth || 750) / 5)));
+const UP = '#1fbf75', DOWN = '#f0525c';
+
+// Construye zonas, segmentos y etiquetas ICT / de horarios para el gráfico.
+function ictLayers(c, ind, tf) {
+  const zones = [], segments = [], labels = [], vbands = [];
+  const n = c.length;
+  const from = Math.max(0, n - visibleCount());
+  const intraday = ['1m', '5m', '15m', '1h'].includes(tf);
+  if (ind.sessions && intraday) {
+    for (const b of Indicators.sessionBoxes(c)) {
+      zones.push({ i1: b.i1, i2: b.i2, top: b.high, bottom: b.low, color: b.color, fill: 0.07, border: true, label: b.name });
+    }
+  }
+  if (ind.killzones && intraday) vbands.push(...Indicators.killzoneBands(c));
+  if (ind.levels) {
+    const lv = Indicators.periodLevels(c);
+    const lastOf = (arr) => arr[arr.length - 1];
+    if (tf !== '1d') {
+      for (const d of lv.days) {
+        const isLast = d === lastOf(lv.days);
+        segments.push({ i1: d.i1, i2: d.i2, p1: d.high, p2: d.high, color: '#e6edf3aa', dash: true, label: isLast ? 'PDH' : null, labelAt: 'end' });
+        segments.push({ i1: d.i1, i2: d.i2, p1: d.low, p2: d.low, color: '#e6edf3aa', dash: true, label: isLast ? 'PDL' : null, labelAt: 'end', below: true });
+      }
+      if (intraday) {
+        for (const d of lv.currentDays) {
+          const isLast = d === lastOf(lv.currentDays);
+          segments.push({ i1: d.i1, i2: d.i2, p1: d.open, p2: d.open, color: '#4f8cffcc', label: isLast ? 'Apertura 00:00 NY' : null, labelAt: 'end' });
+        }
+      }
+    }
+    for (const w of lv.weeks) {
+      const isLast = w === lastOf(lv.weeks);
+      segments.push({ i1: w.i1, i2: w.i2, p1: w.high, p2: w.high, color: '#b17cff', dash: true, width: 1.5, label: isLast ? 'PWH' : null, labelAt: 'end' });
+      segments.push({ i1: w.i1, i2: w.i2, p1: w.low, p2: w.low, color: '#b17cff', dash: true, width: 1.5, label: isLast ? 'PWL' : null, labelAt: 'end', below: true });
+    }
+  }
+  let st = null;
+  if (ind.structure || ind.ob || ind.liquidity) st = Indicators.structure(c, 5);
+  if (ind.fvg) {
+    // Sólo huecos sin rellenar o rellenados dentro de la parte visible.
+    for (const g of Indicators.fvgs(c, 0.1)) {
+      if (g.filled != null && g.filled < from) continue;
+      zones.push({ i1: g.i, i2: g.filled ?? n - 1, top: g.top, bottom: g.bottom, color: g.dir === 'up' ? UP : DOWN, fill: g.filled != null ? 0.08 : 0.2, label: g.filled != null ? null : 'FVG', labelBottom: g.dir === 'down' });
+    }
+  }
+  if (ind.ob) {
+    for (const b of Indicators.orderBlocks(c, st.events)) {
+      if (b.broken != null) continue;
+      zones.push({ i1: b.i, i2: n - 1, top: b.top, bottom: b.bottom, color: b.dir === 'up' ? '#22c3e6' : '#ff7eb6', fill: 0.18, border: true, label: b.dir === 'up' ? 'OB+' : 'OB−' });
+    }
+  }
+  if (ind.structure) {
+    for (const e of st.events) {
+      if (e.to < from) continue;
+      segments.push({ i1: e.from, i2: e.to, p1: e.price, p2: e.price, color: e.dir === 'up' ? UP : DOWN, dash: e.kind === 'BOS', label: e.kind, below: e.dir === 'down' });
+    }
+  }
+  if (ind.liquidity) {
+    const lq = Indicators.liquidity(c, st.swings);
+    // Liquidez pendiente destacada; la ya barrida, tenue y sólo si fue en la parte visible.
+    for (const q of lq.equal) {
+      if (q.swept != null && q.swept < from) continue;
+      const swept = q.swept != null;
+      segments.push({ i1: q.i1, i2: q.swept ?? n - 1, p1: q.price, p2: q.price, color: swept ? '#f5a52466' : '#f5a524', dash: true, width: swept ? 1 : 1.5, label: swept ? null : q.type === 'EQH' ? 'EQH (BSL)' : 'EQL (SSL)', labelAt: 'end', below: q.type === 'EQL' });
+    }
+    // Sólo las 6 barridas más recientes visibles.
+    lq.sweeps.filter((w) => w.i >= from).sort((a, b) => b.i - a.i).slice(0, 6)
+      .forEach((w) => labels.push({ i: w.i, price: w.price, text: w.label, color: '#f5a524', below: w.dir === 'up' }));
+  }
+  const pd = ind.pd ? Indicators.premiumDiscount(c, from) : null;
+  return { zones, segments, labels, vbands, pd };
+}
 
 function drawChart() {
   const c = state.candles;
@@ -342,18 +465,21 @@ function drawChart() {
   if (ind.sma50) overlays.push({ label: 'SMA 50', values: Indicators.sma(cl, 50), color: '#b17cff' });
   if (ind.ema20) overlays.push({ label: 'EMA 20', values: Indicators.ema(cl, 20), color: '#22c3e6' });
   if (ind.ema200) overlays.push({ label: 'EMA 200', values: Indicators.ema(cl, 200), color: '#ff7eb6' });
+  if (ind.vwap && c.length) overlays.push({ label: 'VWAP', values: Indicators.vwap(c), color: '#8bd450' });
   let band = null;
   if (ind.bb) {
     band = Indicators.bollinger(cl, 20, 2);
     overlays.push({ label: 'BB sup', values: band.upper, color: '#4f8cff99' }, { label: 'BB inf', values: band.lower, color: '#4f8cff99' });
   }
   const holding = state.me?.holdings.find((h) => h.symbol === state.symbol);
-  const hlines = (state.lines[state.symbol] || []).map((p) => ({ price: p, color: '#8b98a8', label: fmtAxis(p), solid: true }));
+  const hlines = [];
   if (holding) hlines.push({ price: holding.avg_price, color: '#f5a524', label: 'Tu media' });
   hlines.push({ price: state.tickers[state.symbol]?.last, color: '#4f8cff' });
   mainChart.set({
-    candles: c, overlays, band, hlines, timeframe: state.timeframe, visible: 150,
-    panels: ['volume', 'rsi', 'macd'].filter((k) => ind[k]),
+    candles: c, overlays, band, hlines, timeframe: state.timeframe, visible: visibleCount(),
+    panels: ['volume', 'rsi', 'macd', 'stoch', 'atr'].filter((k) => ind[k]),
+    drawings: state.drawings[state.symbol] || [],
+    ...(c.length ? ictLayers(c, ind, state.timeframe) : {}),
   });
 }
 
@@ -413,7 +539,7 @@ $$('[data-pct]').forEach((b) =>
     const p = execPrice();
     if (!p || !state.me) return;
     if (state.side === 'buy') {
-      const spend = (state.me.cash * f) / (1 + state.config.feeRate);
+      const spend = (state.me.cash * f) / (1 + feeOf(state.symbol));
       form.qty.value = +(Math.floor((spend / p) * 1e8) / 1e8).toFixed(8);
     } else {
       const h = state.me.holdings.find((x) => x.symbol === state.symbol);
@@ -434,8 +560,10 @@ function updatePreview(syncQty = true) {
   }
   const qty = Number(form.qty.value) || 0;
   const notional = qty * (p || 0);
-  const fee = notional * state.config.feeRate;
+  const fee = notional * feeOf(state.symbol);
   const h = state.me?.holdings.find((x) => x.symbol === state.symbol);
+  $$('.pip-row').forEach((el) => el.classList.toggle('hidden', !isForex(state.symbol)));
+  if (isForex(state.symbol)) $('#p-pip').textContent = `${usd(qty * 0.0001)} (${num(qty / 100000, 3)} lotes)`;
   $('#p-avail').textContent = state.side === 'buy' ? usd(state.me?.cash) : `${num(h?.qty || 0)} ${base(state.symbol)}`;
   $('#p-price').textContent = px(p);
   $('#p-fee').textContent = usd(fee);
@@ -577,6 +705,8 @@ function drawBacktest() {
     candles: r.candles,
     overlays: r.plots.map((p) => ({ label: p.label, values: p.values })),
     markers: r.markers,
+    zones: r.zones || [],
+    segments: r.segments || [],
     panels: ['volume', ...r.panels],
     hlines: [],
     timeframe: r.request.timeframe,
@@ -671,6 +801,27 @@ $('#bots-list').addEventListener('click', async (e) => {
   }
 });
 
+// ---------- Horarios de mercado ----------
+const FOREX_MARKET = { name: 'Forex (mercado global)', tz: 'America/New_York', forex: true };
+function renderClocks() {
+  const dur = (m) => (m >= 1440 ? `${Math.floor(m / 1440)} d ${Math.floor((m % 1440) / 60)} h` : m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`);
+  const rows = [FOREX_MARKET, ...Indicators.EXCHANGES].map((ex) => {
+    const st = Indicators.marketStatus(ex);
+    const label = st.open ? 'Abierta' : st.lunch ? 'Pausa' : 'Cerrada';
+    const klass = st.open ? 'open' : st.lunch ? 'lunch' : 'closed';
+    return `<div class="clock"><span>${esc(ex.name)} <span class="muted">${st.localTime}</span></span>
+      <span class="st ${klass}">● ${label}</span>
+      <span class="when">${st.open ? 'Cierra' : 'Abre'} en ${dur(st.minutesToChange)}</span></div>`;
+  });
+  // Sesiones de forex y kill zone activa ahora mismo.
+  const now = Date.now();
+  const sessions = Indicators.SESSIONS.filter((x) => Indicators.marketStatus(x, now).open).map((x) => x.name);
+  const kz = Indicators.KILLZONES.find((k) => Indicators.inKillzone(now, [k.id]));
+  const forexOpen = Indicators.marketStatus(FOREX_MARKET, now).open;
+  rows.unshift(`<p class="small">${forexOpen ? `Sesión activa: <strong>${sessions.length ? esc(sessions.join(' + ')) : 'Sídney / transición'}</strong>` : 'Forex cerrado (fin de semana)'}${forexOpen && kz ? ` · <span style="color:${kz.color}">${esc(kz.name)}</span>` : ''}</p>`);
+  $('#clocks').innerHTML = rows.join('');
+}
+
 // ---------- Arranque ----------
 let pollTimer;
 async function enterApp() {
@@ -680,6 +831,7 @@ async function enterApp() {
   await Promise.all([loadTickers(), loadMe(), loadStrategies()]);
   selectSymbol(state.symbol);
   setSide(state.side);
+  renderClocks();
   clearInterval(pollTimer);
   let n = 0;
   pollTimer = setInterval(async () => {
@@ -689,6 +841,7 @@ async function enterApp() {
       if (state.view === 'market') drawChart();
       if (state.view === 'orders') loadOrders();
       if (state.view === 'bots') loadBots();
+      if (state.view === 'market' && n % 6 === 0) renderClocks();
       if (++n % 12 === 0 && state.view === 'market') loadCandles();
     } catch { /* se reintenta en el siguiente ciclo */ }
   }, 5000);

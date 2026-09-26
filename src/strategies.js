@@ -114,6 +114,52 @@ const STRATEGIES = [
       };
     },
   },
+  {
+    id: 'ict_fvg',
+    name: 'ICT: estructura + Fair Value Gap',
+    description: 'Estilo ICT / Smart Money: tras un BOS o CHoCH alcista, espera a que el precio vuelva a un Fair Value Gap (imbalance) alcista y compre ahí si la vela cierra por encima del hueco. Vende en un CHoCH/BOS bajista. Opcionalmente sólo entra dentro de las kill zones de Londres y Nueva York.',
+    params: [
+      { key: 'swing', label: 'Velas del pivote (estructura)', default: 5, min: 2, max: 20 },
+      { key: 'minAtr', label: 'Tamaño mín. FVG (× ATR)', default: 0.2, min: 0, max: 3, step: 0.05 },
+      { key: 'killzone', label: 'Sólo en kill zones (1 = sí)', default: 0, min: 0, max: 1 },
+    ],
+    run(c, p) {
+      const st = I.structure(c, p.swing);
+      const gaps = I.fvgs(c, p.minAtr).filter((g) => g.dir === 'up');
+      const signals = new Array(c.length).fill(null);
+      const lastUp = [];
+      let active = [];
+      let gi = 0, ei = 0, lastBullEvent = -1;
+      for (let i = 0; i < c.length; i++) {
+        while (ei < st.events.length && st.events[ei].to <= i) {
+          const e = st.events[ei++];
+          if (e.dir === 'up') { lastBullEvent = e.to; active = active.filter((g) => g.created >= e.from); }
+          else { active = []; if (i === e.to) signals[i] = 'sell'; }
+        }
+        // Los FVG se conocen al cierre de la vela que los crea.
+        while (gi < gaps.length && gaps[gi].created < i) {
+          if (gaps[gi].created >= lastBullEvent - 20) active.push(gaps[gi]);
+          gi++;
+        }
+        if (st.trend[i] !== 1 || signals[i]) continue;
+        const [, , , low, close] = c[i];
+        for (const g of active) {
+          if (low <= g.top && close > g.bottom && (!p.killzone || I.inKillzone(c[i][0], ['london', 'ny']))) {
+            signals[i] = 'buy';
+            lastUp.push(g);
+            break;
+          }
+        }
+        active = active.filter((g) => low > g.bottom && !lastUp.includes(g));
+      }
+      return {
+        signals,
+        plots: [],
+        zones: gaps.map((g) => ({ i1: g.i, i2: g.filled ?? c.length - 1, top: g.top, bottom: g.bottom, color: '#1fbf75', label: 'FVG' })),
+        segments: st.events.map((e) => ({ i1: e.from, i2: e.to, p1: e.price, p2: e.price, color: e.dir === 'up' ? '#1fbf75' : '#f0525c', label: e.kind, dash: e.kind === 'BOS' })),
+      };
+    },
+  },
 ];
 
 const byId = Object.fromEntries(STRATEGIES.map((s) => [s.id, s]));

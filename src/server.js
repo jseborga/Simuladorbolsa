@@ -24,7 +24,13 @@ function createApp(broker, market, bots) {
   const api = express.Router();
 
   api.get('/config', (req, res) => {
-    res.json({ ...market.info(), initialCash: broker.initialCash, feeRate: broker.feeRate, minNotional: broker.minNotional });
+    res.json({
+      ...market.info(),
+      initialCash: broker.initialCash,
+      feeRate: broker.feeRate,
+      feeRates: Object.fromEntries(market.symbols.map((s) => [s, broker.feeFor(s)])),
+      minNotional: broker.minNotional,
+    });
   });
 
   api.get('/tickers', (req, res) => res.json(market.tickers));
@@ -86,7 +92,7 @@ function createApp(broker, market, bots) {
     }
     const result = backtest(candles, {
       strategy, params, stopLoss, takeProfit, positionPct,
-      initialCash: broker.initialCash, feeRate: broker.feeRate,
+      initialCash: broker.initialCash, feeRate: broker.feeFor(symbol),
     });
     res.json({ ...result, candles });
   });
@@ -133,6 +139,10 @@ async function main() {
   const broker = new Broker(db, market, {
     initialCash: Number(process.env.INITIAL_CASH) || 10000,
     feeRate: process.env.FEE_RATE !== undefined ? Number(process.env.FEE_RATE) : 0.001,
+    categoryFees: {
+      Forex: process.env.FEE_RATE_FOREX !== undefined ? Number(process.env.FEE_RATE_FOREX) : 0.0001,
+      Oro: process.env.FEE_RATE_GOLD !== undefined ? Number(process.env.FEE_RATE_GOLD) : 0.0005,
+    },
   });
   const bots = new BotManager(db, market, broker, { intervalMs: Number(process.env.BOT_INTERVAL_MS) || 20000 });
   await market.start();

@@ -60,12 +60,19 @@
       <!-- Mercado -->
       <section class="view" id="view-market">
         <div class="market-grid">
-          <div class="card">
-            <h2>Activos</h2>
-            <table class="list" id="ticker-table">
-              <thead><tr><th>Par</th><th class="r">Precio</th><th class="r">24h</th></tr></thead>
-              <tbody></tbody>
-            </table>
+          <div class="col">
+            <div class="card">
+              <h2>Activos</h2>
+              <table class="list" id="ticker-table">
+                <thead><tr><th>Par</th><th class="r">Precio</th><th class="r">24h</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="card">
+              <h2>🕒 Horarios de mercado</h2>
+              <div id="clocks"></div>
+              <p class="muted small">Horario regular de lunes a viernes; no incluye festivos. Las criptomonedas cotizan 24/7.</p>
+            </div>
           </div>
           <div class="card">
             <div class="chart-head">
@@ -77,22 +84,51 @@
             </div>
             <div class="price-line"><span id="chart-price">—</span> <span id="chart-change"></span></div>
             <div class="toolbar">
-              <span class="muted small">Indicadores:</span>
-              <label class="chk"><input type="checkbox" data-ind="sma20"> SMA 20</label>
-              <label class="chk"><input type="checkbox" data-ind="sma50"> SMA 50</label>
-              <label class="chk"><input type="checkbox" data-ind="ema20"> EMA 20</label>
-              <label class="chk"><input type="checkbox" data-ind="ema200"> EMA 200</label>
-              <label class="chk"><input type="checkbox" data-ind="bb"> Bollinger</label>
-              <label class="chk"><input type="checkbox" data-ind="volume"> Volumen</label>
-              <label class="chk"><input type="checkbox" data-ind="rsi"> RSI</label>
-              <label class="chk"><input type="checkbox" data-ind="macd"> MACD</label>
+              <details class="ind-menu" id="ind-menu">
+                <summary>📊 Indicadores <span id="ind-count" class="muted"></span></summary>
+                <div class="ind-groups">
+                  <div>
+                    <h4>Clásicos</h4>
+                    <label class="chk"><input type="checkbox" data-ind="sma20"> SMA 20</label>
+                    <label class="chk"><input type="checkbox" data-ind="sma50"> SMA 50</label>
+                    <label class="chk"><input type="checkbox" data-ind="ema20"> EMA 20</label>
+                    <label class="chk"><input type="checkbox" data-ind="ema200"> EMA 200</label>
+                    <label class="chk"><input type="checkbox" data-ind="bb"> Bandas de Bollinger</label>
+                    <label class="chk"><input type="checkbox" data-ind="vwap"> VWAP diario</label>
+                    <label class="chk"><input type="checkbox" data-ind="volume"> Volumen</label>
+                  </div>
+                  <div>
+                    <h4>Osciladores (panel inferior)</h4>
+                    <label class="chk"><input type="checkbox" data-ind="rsi"> RSI 14</label>
+                    <label class="chk"><input type="checkbox" data-ind="macd"> MACD 12/26/9</label>
+                    <label class="chk"><input type="checkbox" data-ind="stoch"> Estocástico 14/3</label>
+                    <label class="chk"><input type="checkbox" data-ind="atr"> ATR 14</label>
+                  </div>
+                  <div>
+                    <h4>ICT / Smart Money</h4>
+                    <label class="chk"><input type="checkbox" data-ind="fvg"> Fair Value Gaps (imbalances)</label>
+                    <label class="chk"><input type="checkbox" data-ind="ob"> Order Blocks</label>
+                    <label class="chk"><input type="checkbox" data-ind="structure"> Estructura (BOS / CHoCH)</label>
+                    <label class="chk"><input type="checkbox" data-ind="liquidity"> Liquidez (EQH/EQL, barridas)</label>
+                    <label class="chk"><input type="checkbox" data-ind="pd"> Premium / Discount</label>
+                    <label class="chk"><input type="checkbox" data-ind="levels"> PDH/PDL, PWH/PWL, apertura NY</label>
+                  </div>
+                  <div>
+                    <h4>Horarios <span class="muted small">(velas ≤ 1h)</span></h4>
+                    <label class="chk"><input type="checkbox" data-ind="sessions"> Sesiones Tokio / Londres / NY</label>
+                    <label class="chk"><input type="checkbox" data-ind="killzones"> Kill zones ICT</label>
+                  </div>
+                </div>
+              </details>
+              <span class="muted small">Dibujar:</span>
+              <button type="button" class="tool" data-tool="hline" title="Un clic: soporte o resistencia">― Horizontal</button>
+              <button type="button" class="tool" data-tool="trend" title="Dos clics: inicio y fin">╱ Tendencia</button>
+              <button type="button" class="tool" data-tool="fib" title="Dos clics: del inicio al final del impulso">🌀 Fibonacci</button>
+              <button type="button" class="tool" data-tool="rect" title="Dos clics: esquinas opuestas">▭ Zona</button>
+              <button type="button" class="tool" id="tool-undo" title="Borrar el último dibujo">↶ Deshacer</button>
+              <button type="button" class="tool" id="tool-clear">🗑️ Borrar todo</button>
             </div>
-            <div class="toolbar">
-              <span class="muted small">Herramientas:</span>
-              <button type="button" class="tool" id="tool-line" title="Haz clic en el gráfico para marcar un soporte o resistencia">✏️ Línea horizontal</button>
-              <button type="button" class="tool" id="tool-clear">🗑️ Borrar líneas</button>
-              <span class="muted small">Pasa el ratón por el gráfico para ver la cruz de precio y los datos de cada vela.</span>
-            </div>
+            <p class="hint" id="tool-hint">Pasa el ratón por el gráfico para ver la cruz de precio y los datos de cada vela.</p>
             <canvas id="chart"></canvas>
           </div>
           <div class="card">
@@ -118,6 +154,7 @@
                 <button type="button" data-pct="75">75%</button><button type="button" data-pct="100">Máx</button>
               </div>
               <dl class="preview">
+                <dt class="pip-row hidden">Valor de 1 pip</dt><dd class="pip-row hidden" id="p-pip">—</dd>
                 <dt>Disponible</dt><dd id="p-avail">—</dd>
                 <dt>Precio estimado</dt><dd id="p-price">—</dd>
                 <dt>Comisión</dt><dd id="p-fee">—</dd>
@@ -291,6 +328,33 @@
               <li><strong>Volumen</strong>: cuánto se negoció. Un movimiento con mucho volumen suele ser más fiable.</li>
               <li><strong>Soportes y resistencias</strong>: usa la herramienta «Línea horizontal» para marcar precios donde el mercado rebotó antes.</li>
             </ul></details>
+          <details><summary>Forex: pips, lotes y oro</summary>
+            <ul>
+              <li>En forex se opera una divisa contra otra. En <strong>EUR/USD</strong> compras euros pagando dólares: si sube, el euro se revaloriza.</li>
+              <li><strong>Pip</strong>: la cuarta cifra decimal (0,0001). Si EUR/USD pasa de 1,1000 a 1,1025 se movió 25 pips. El simulador te muestra cuánto vale 1 pip según tu cantidad.</li>
+              <li><strong>Lotes</strong>: 1 lote estándar = 100 000 unidades (1 pip ≈ 10 USD), 1 mini lote = 10 000 (≈ 1 USD), 1 micro lote = 1 000 (≈ 0,10 USD).</li>
+              <li><strong>PAXG/USD</strong> es un token respaldado por una onza de oro físico: sigue el precio del oro (XAU/USD).</li>
+              <li>El forex abre de domingo 17:00 a viernes 17:00 (hora de Nueva York). La mayor liquidez está en el solape Londres–Nueva York.</li>
+              <li>Los precios de forex y oro vienen de Kraken a través de CCXT. Sólo se pueden operar pares cotizados en USD porque tu saldo está en USD.</li>
+            </ul></details>
+          <details><summary>ICT / Smart Money Concepts</summary>
+            <p>Conceptos popularizados por Michael J. Huddleston (<em>Inner Circle Trader</em>). Buscan entender dónde están las órdenes de los grandes participantes.</p>
+            <ul>
+              <li><strong>Fair Value Gap (FVG) o imbalance</strong>: hueco entre la mecha de la vela 1 y la de la vela 3 de un movimiento fuerte. El precio suele volver a «rellenarlo». Verde = alcista, rojo = bajista; se dibuja hasta que se rellena.</li>
+              <li><strong>Order Block (OB)</strong>: última vela contraria antes del impulso que rompió la estructura. Zona donde se esperan órdenes institucionales. Se borra al cerrar el precio al otro lado.</li>
+              <li><strong>BOS</strong> (<em>Break of Structure</em>): el precio rompe un máximo/mínimo a favor de la tendencia. <strong>CHoCH</strong> (<em>Change of Character</em>): la primera ruptura en contra, posible cambio de tendencia.</li>
+              <li><strong>Liquidez</strong>: por encima de máximos iguales (EQH, <em>buy-side liquidity</em>) y por debajo de mínimos iguales (EQL, <em>sell-side liquidity</em>) se acumulan stops. Una <strong>barrida</strong> es cuando la mecha los toma y el precio vuelve: señal de posible giro.</li>
+              <li><strong>Premium / Discount</strong>: por encima del 50 % del rango el precio está «caro» (buscar ventas); por debajo, «barato» (buscar compras).</li>
+              <li><strong>OTE</strong> (<em>Optimal Trade Entry</em>): retroceso del 62 %–79 % de un impulso. Usa la herramienta Fibonacci: la zona OTE sale sombreada en naranja y los niveles −0,27 y −0,62 son objetivos.</li>
+              <li><strong>PDH / PDL</strong>: máximo y mínimo del día anterior; <strong>PWH / PWL</strong>: de la semana anterior. Son imanes de liquidez. La <strong>apertura de medianoche de NY</strong> se usa como referencia del día.</li>
+            </ul></details>
+          <details><summary>Sesiones y kill zones</summary>
+            <ul>
+              <li><strong>Sesiones de forex</strong> (hora local): Tokio 9:00–18:00, Londres 8:00–17:00, Nueva York 8:00–17:00. En el gráfico se ven como cajas con el máximo y mínimo de cada sesión.</li>
+              <li><strong>Kill zones de ICT</strong> (hora de Nueva York): Asia 20:00–00:00, Londres 2:00–5:00, Nueva York 7:00–10:00 y cierre de Londres 10:00–12:00. Son las franjas con más volatilidad y donde suelen formarse los movimientos del día.</li>
+              <li>Una idea típica: marcar el rango de Asia y esperar a que Londres o Nueva York barran uno de sus extremos antes de buscar la entrada.</li>
+              <li>El panel «Horarios de mercado» muestra en tiempo real qué bolsas están abiertas y cuánto falta para la apertura o el cierre.</li>
+            </ul></details>
           <details><summary>Backtesting: probar antes de arriesgar</summary>
             <p>Un backtest aplica las reglas de una estrategia a datos pasados. En este simulador la señal se calcula al cierre de una vela y se ejecuta en la apertura de la siguiente, con comisiones, para no «hacer trampa» mirando al futuro.</p>
             <ul>
@@ -310,6 +374,9 @@
               <li>Haz un backtest del cruce SMA 10/30 en BTC 1h. Luego prueba 20/50. ¿Cuál tiene menor drawdown?</li>
               <li>Añade un stop-loss del 3 % al backtest del RSI. ¿Mejora o empeora el resultado?</li>
               <li>Activa un bot con 500 USD y revisa en unos días si se comportó como en el backtest.</li>
+              <li>En EUR/USD 15m activa FVG, estructura y kill zones. ¿Cuántos FVG se rellenan dentro de la kill zone de Londres?</li>
+              <li>Traza un Fibonacci sobre el último impulso y observa si el precio reacciona en la zona OTE.</li>
+              <li>Haz un backtest de la estrategia ICT con y sin el filtro de kill zones y compara los resultados.</li>
             </ol></details>
           <p class="muted small">⚠️ Esto es una herramienta educativa. Los resultados simulados no garantizan resultados reales y nada de lo que ves aquí es asesoramiento financiero.</p>
         </div>

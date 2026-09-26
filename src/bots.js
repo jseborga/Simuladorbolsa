@@ -120,7 +120,7 @@ class BotManager {
   buy(bot) {
     try {
       const price = this.broker.quote(bot.symbol, 'buy');
-      const t = this.broker.marketOrder(bot.user_id, bot.symbol, 'buy', bot.amount / (price * (1 + this.broker.feeRate)), { botId: bot.id });
+      const t = this.broker.marketOrder(bot.user_id, bot.symbol, 'buy', bot.amount / (price * (1 + this.broker.feeFor(bot.symbol))), { botId: bot.id });
       this.log(bot, `Compró ${+t.qty.toFixed(8)} a ${t.price}`, { qty: t.qty, entry_price: t.price, trade_count: bot.trade_count + 1 });
     } catch (e) {
       this.log(bot, 'No pudo comprar: ' + e.message);
@@ -136,7 +136,7 @@ class BotManager {
     }
     try {
       const t = this.broker.marketOrder(bot.user_id, bot.symbol, 'sell', qty, { botId: bot.id });
-      const pnl = (t.price - bot.entry_price) * qty - t.fee - bot.entry_price * qty * this.broker.feeRate;
+      const pnl = (t.price - bot.entry_price) * qty - t.fee - bot.entry_price * qty * this.broker.feeFor(bot.symbol);
       this.log(bot, `${reason}: vendió a ${t.price} (G/P ${pnl.toFixed(2)} USD)`, {
         qty: 0, entry_price: null, realized: bot.realized + pnl, trade_count: bot.trade_count + 1,
       });

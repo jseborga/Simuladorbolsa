@@ -2,6 +2,7 @@
 // Nada aquí toca dinero real; sólo usa precios de mercado como referencia.
 const crypto = require('node:crypto');
 const { tx } = require('./db');
+const { category } = require('./market');
 
 const EPS = 1e-9;
 
@@ -18,12 +19,18 @@ function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
 }
 
 class Broker {
-  constructor(db, market, { initialCash = 10000, feeRate = 0.001, minNotional = 1 } = {}) {
+  constructor(db, market, { initialCash = 10000, feeRate = 0.001, categoryFees = {}, minNotional = 1 } = {}) {
     this.db = db;
     this.market = market;
     this.initialCash = initialCash;
     this.feeRate = feeRate;
+    // Comisión por tipo de activo (p. ej. el forex tiene costes mucho menores que las criptomonedas).
+    this.categoryFees = categoryFees;
     this.minNotional = minNotional;
+  }
+
+  feeFor(symbol) {
+    return this.categoryFees[category(symbol)] ?? this.feeRate;
   }
 
   // ---------- Usuarios ----------
@@ -109,7 +116,7 @@ class Broker {
   fill(userId, symbol, side, qty, price, orderId, botId = null) {
     const notional = qty * price;
     if (notional < this.minNotional) throw new BrokerError(`El monto mínimo por operación es $${this.minNotional}`);
-    const fee = notional * this.feeRate;
+    const fee = notional * this.feeFor(symbol);
     const user = this.db.prepare('SELECT cash FROM users WHERE id = ?').get(userId);
     const h = this.db.prepare('SELECT qty, avg_price FROM holdings WHERE user_id = ? AND symbol = ?').get(userId, symbol);
     let realized = 0;
@@ -160,7 +167,7 @@ class Broker {
     if (!Number.isFinite(price) || price <= 0) throw new BrokerError('Precio inválido');
     if (qty * price < this.minNotional) throw new BrokerError(`El monto mínimo por operación es $${this.minNotional}`);
     if (side === 'buy') {
-      const cost = qty * price * (1 + this.feeRate);
+      const cost = qty * price * (1 + this.feeFor(symbol));
       const { cash } = this.db.prepare('SELECT cash FROM users WHERE id = ?').get(userId);
       if (cost > cash + EPS) throw new BrokerError(`Saldo insuficiente para esta orden (necesitas ~$${cost.toFixed(2)})`);
     } else {

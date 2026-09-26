@@ -9,7 +9,7 @@ function backtest(candles, { strategy: id, params, initialCash = 10000, feeRate 
   const strategy = getStrategy(id);
   const p = normalizeParams(strategy, params);
   if (candles.length < 10) throw Object.assign(new Error('No hay suficientes velas para el backtest'), { status: 400 });
-  const { signals, plots, panels = [] } = strategy.run(candles, p);
+  const { signals, plots, panels = [], zones = [], segments = [] } = strategy.run(candles, p);
   const sl = Math.max(Number(stopLoss) || 0, 0) / 100;
   const tp = Math.max(Number(takeProfit) || 0, 0) / 100;
   const sizeFrac = Math.min(Math.max(Number(positionPct) || 100, 1), 100) / 100;
@@ -107,6 +107,8 @@ function backtest(candles, { strategy: id, params, initialCash = 10000, feeRate 
     buyHold,
     plots,
     panels,
+    zones,
+    segments,
   };
 }
 

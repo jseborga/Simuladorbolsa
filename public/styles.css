@@ -73,7 +73,8 @@ main { padding: 0 16px 24px; }
 .view { display: grid; gap: 12px; }
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; min-width: 0; overflow-x: auto; }
 
-.market-grid { display: grid; grid-template-columns: 310px minmax(0, 1fr) 300px; gap: 12px; }
+.market-grid { display: grid; grid-template-columns: 310px minmax(0, 1fr) 300px; gap: 12px; align-items: start; }
+.col { display: grid; gap: 12px; min-width: 0; }
 @media (max-width: 1100px) { .market-grid { grid-template-columns: 1fr; } }
 
 table.list { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
@@ -141,3 +142,26 @@ canvas { width: 100%; display: block; }
 .status { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid; }
 .status.on { color: var(--up); }
 .status.off { color: var(--muted); }
+
+/* Menú de indicadores */
+.ind-menu { position: relative; }
+.ind-menu summary { cursor: pointer; list-style: none; padding: 4px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px; background: var(--panel-2); }
+.ind-menu summary::-webkit-details-marker { display: none; }
+.ind-menu[open] summary { border-color: var(--accent); }
+.ind-groups { position: absolute; z-index: 20; top: calc(100% + 6px); left: 0; display: grid; grid-template-columns: repeat(4, max-content); gap: 16px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; box-shadow: 0 8px 30px rgba(0,0,0,.5); }
+.ind-groups h4 { margin: 0 0 6px; font-size: 12px; color: var(--muted); font-weight: 600; }
+.ind-groups .chk { display: flex; margin-bottom: 5px; }
+@media (max-width: 900px) { .ind-groups { grid-template-columns: 1fr 1fr; position: fixed; left: 16px; right: 16px; top: 80px; max-height: 70vh; overflow: auto; } }
+@media (max-width: 500px) { .ind-groups { grid-template-columns: 1fr; } }
+
+/* Categorías de activos */
+tr.cat td { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; padding-top: 12px; cursor: default; }
+
+/* Relojes de mercado */
+.clock { display: grid; grid-template-columns: 1fr auto; gap: 0 8px; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.clock:last-child { border-bottom: none; }
+.clock .when { grid-column: 1 / -1; font-size: 11px; color: var(--muted); }
+.clock .st { font-size: 11px; font-weight: 600; }
+.clock .st.open { color: var(--up); }
+.clock .st.closed { color: var(--down); }
+.clock .st.lunch { color: var(--warn); }

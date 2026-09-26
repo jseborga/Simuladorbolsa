@@ -4,16 +4,25 @@
 const ccxt = require('ccxt');
 const { EventEmitter } = require('node:events');
 
+// Sólo pares cotizados en USD, porque el saldo de las cuentas está en USD.
 const DEFAULT_SYMBOLS = [
   'BTC/USD', 'ETH/USD', 'SOL/USD', 'XRP/USD', 'ADA/USD',
   'DOGE/USD', 'LTC/USD', 'DOT/USD', 'LINK/USD', 'AVAX/USD',
+  'EUR/USD', 'GBP/USD', 'AUD/USD', 'PAXG/USD',
 ];
+
+const CATEGORIES = { EUR: 'Forex', GBP: 'Forex', AUD: 'Forex', PAXG: 'Oro' };
+const category = (symbol) => CATEGORIES[symbol.split('/')[0]] || 'Cripto';
 
 // Precios de arranque para el modo simulado.
 const SEED_PRICES = {
   BTC: 65000, ETH: 3200, SOL: 150, XRP: 0.55, ADA: 0.45,
   DOGE: 0.12, LTC: 80, DOT: 6.5, LINK: 14, AVAX: 30,
+  EUR: 1.08, GBP: 1.27, AUD: 0.66, PAXG: 2400,
 };
+
+// Volatilidad por tick del modo simulado: el forex se mueve mucho menos que las criptomonedas.
+const SIM_VOL = { Forex: 0.0003, Oro: 0.001, Cripto: 0.004 };
 
 const TIMEFRAME_MS = { '1m': 60e3, '5m': 300e3, '15m': 900e3, '1h': 3600e3, '4h': 14400e3, '1d': 86400e3 };
 
@@ -62,7 +71,12 @@ class Market extends EventEmitter {
   }
 
   info() {
-    return { mode: this.mode, exchange: this.exchange?.name ?? 'Mercado simulado', symbols: this.symbols };
+    return {
+      mode: this.mode,
+      exchange: this.exchange?.name ?? 'Mercado simulado',
+      symbols: this.symbols,
+      categories: Object.fromEntries(this.symbols.map((s) => [s, category(s)])),
+    };
   }
 
   startSimulation() {
@@ -80,7 +94,7 @@ class Market extends EventEmitter {
     if (this.mode === 'simulated') {
       for (const s of this.symbols) {
         const t = this.tickers[s];
-        const drift = (Math.random() - 0.5) * 0.004; // ±0.2 % por tick
+        const drift = (Math.random() - 0.5) * SIM_VOL[category(s)];
         const last = Math.max(t.last * (1 + drift), 1e-8);
         this.tickers[s] = {
           ...t, last, bid: last * 0.9995, ask: last * 1.0005,
@@ -136,7 +150,7 @@ class Market extends EventEmitter {
     const now = Math.floor(Date.now() / step) * step;
     let data = this.ohlcvCache.get(key);
     if (!data) {
-      data = this.fakeCandles(price, step, 1000, now);
+      data = this.fakeCandles(price, step, 1000, now, SIM_VOL[category(symbol)] / 0.004);
       this.ohlcvCache.set(key, data);
     }
     let last = data[data.length - 1];
@@ -153,8 +167,8 @@ class Market extends EventEmitter {
   }
 
   // Paseo aleatorio hacia atrás que termina en el precio actual.
-  fakeCandles(close, step, limit, end) {
-    const vol = 0.01 * Math.sqrt(step / 3600e3);
+  fakeCandles(close, step, limit, end, volScale = 1) {
+    const vol = 0.01 * volScale * Math.sqrt(step / 3600e3);
     const out = [];
     let trend = 0;
     for (let i = 0; i < limit; i++) {
@@ -169,4 +183,4 @@ class Market extends EventEmitter {
   }
 }
 
-module.exports = { Market, DEFAULT_SYMBOLS, TIMEFRAME_MS };
+module.exports = { Market, DEFAULT_SYMBOLS, TIMEFRAME_MS, category };
